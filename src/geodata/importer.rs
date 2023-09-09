@@ -1,6 +1,8 @@
 use crate::coords;
 use crate::geodata::find_polygons::{find_polygons_in_multipolygon, NodeDesc, NodeDescPair};
 use crate::geodata::saver::save_to_internal_format;
+use crate::mapcss::filterer::Filterer;
+use crate::mapcss::parser::ObjectType;
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(feature = "pbf")]
 use osmpbf::{Element, ElementReader, RelMemberType};
@@ -8,15 +10,17 @@ use quick_xml::events::attributes::Attributes;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-pub fn import<P: AsRef<Path>>(input: P, output: P) -> Result<()> {
+pub fn import<P: AsRef<Path>>(input: P, output: P, filterer: Option<&Filterer>) -> Result<()> {
     let output_file = File::create(output.as_ref()).context(format!(
         "Failed to open {} for writing",
         output.as_ref().to_string_lossy()
@@ -24,77 +28,26 @@ pub fn import<P: AsRef<Path>>(input: P, output: P) -> Result<()> {
     let mut writer = BufWriter::new(output_file);
 
     let parsed = match input.as_ref().extension().and_then(OsStr::to_str) {
-        Some("osm") | Some("xml") => {
-            let input_file = File::open(input.as_ref()).context(format!(
-                "Failed to open {} for reading",
-                input.as_ref().to_string_lossy()
-            ))?;
-            let parser = Reader::from_reader(BufReader::new(input_file));
-            parse_osm_xml(parser)?
-        }
-        #[cfg(feature = "pbf")]
-        Some("pbf") => parse_pbf(input)?,
+        Some("osm") => parse_osm_xml(input, filterer)?,
+        Some("xml") => parse_osm_xml(input, filterer)?,
+        //#[cfg(feature = "pbf")]
+        //Some("pbf") => parse_pbf(input)?,
         _ => bail!("Extension not supported"),
     };
 
-    println!("Converting geodata to internal format");
-    save_to_internal_format(&mut writer, &parsed).context("Failed to write the imported data to the output file")?;
+    println!("*** Build indexes");
+    let mut index: Indexed<'_> = Indexed::new();
+    index.build_from(&parsed);
+    index.print_stats();
+
+    println!("*** Converting geodata to internal format");
+    save_to_internal_format(&mut writer, &index).context("Failed to write the imported data to the output file")?;
     Ok(())
 }
 
-pub(super) struct OsmEntityStorage<E: Default> {
-    global_id_to_local_id: HashMap<u64, usize>,
-    entities: Vec<E>,
-}
-
-impl<E: Default> OsmEntityStorage<E> {
-    fn new() -> OsmEntityStorage<E> {
-        OsmEntityStorage {
-            global_id_to_local_id: HashMap::new(),
-            entities: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, global_id: u64, entity: E) {
-        let old_size = self.entities.len();
-        self.global_id_to_local_id.insert(global_id, old_size);
-        self.entities.push(entity);
-    }
-
-    fn translate_id(&self, global_id: u64) -> Option<usize> {
-        self.global_id_to_local_id.get(&global_id).cloned()
-    }
-
-    pub(super) fn get_entities(&self) -> &Vec<E> {
-        &self.entities
-    }
-}
-
-pub(super) struct EntityStorages {
-    pub(super) node_storage: OsmEntityStorage<RawNode>,
-    pub(super) way_storage: OsmEntityStorage<RawWay>,
-    pub(super) polygon_storage: Vec<Polygon>,
-    pub(super) multipolygon_storage: OsmEntityStorage<Multipolygon>,
-}
-
-fn print_storage_stats(entity_storages: &EntityStorages) {
-    println!(
-        "Got {} nodes, {} ways and {} multipolygon relations so far",
-        entity_storages.node_storage.entities.len(),
-        entity_storages.way_storage.entities.len(),
-        entity_storages.multipolygon_storage.entities.len()
-    );
-}
-
 #[cfg(feature = "pbf")]
-fn parse_pbf<P: AsRef<Path>>(input: P) -> Result<EntityStorages> {
-    let mut entity_storages = EntityStorages {
-        node_storage: OsmEntityStorage::new(),
-        way_storage: OsmEntityStorage::new(),
-        polygon_storage: Vec::new(),
-        multipolygon_storage: OsmEntityStorage::new(),
-    };
-
+fn parse_pbf<P: AsRef<Path>>(input: P, filterer: Option<&Filterer>) -> Result<Parsed> {
+    let mut entity_storages = Parsed::new();
     let mut elem_count = 0;
     println!("Parsing PBF");
 
@@ -102,96 +55,59 @@ fn parse_pbf<P: AsRef<Path>>(input: P) -> Result<EntityStorages> {
     reader.for_each(|element| {
         match element {
             Element::DenseNode(el_node) => {
-                let mut node = RawNode {
-                    global_id: el_node.id() as u64,
-                    lat: el_node.lat(),
-                    lon: el_node.lon(),
-                    tags: RawTags::default(),
-                };
+                let mut node = ParsedNode::new(el_node.id() as OsmRef, el_node.lat(), el_node.lon());
                 for (key, value) in el_node.tags() {
                     node.tags.insert(key.to_string(), value.to_string());
                 }
                 elem_count += 1;
-                entity_storages.node_storage.add(node.global_id, node);
+                entity_storages.add_node(node, filterer);
             }
             Element::Way(el_way) => {
-                let mut way = RawWay {
-                    global_id: el_way.id() as u64,
-                    node_ids: RawRefs::default(),
-                    tags: RawTags::default(),
-                };
+                let mut way = ParsedWay::new(el_way.id() as OsmRef);
                 for (key, value) in el_way.tags() {
                     way.tags.insert(key.to_string(), value.to_string());
                 }
                 for r in el_way.refs() {
-                    if let Some(local_id) = entity_storages.node_storage.translate_id(r as u64) {
-                        way.node_ids.push(local_id);
-                    }
+                    way.nodes_ref.push(r as OsmRef);
                 }
-                postprocess_node_refs(&mut way.node_ids);
                 elem_count += 1;
-                entity_storages.way_storage.add(way.global_id, way);
+                entity_storages.add_way(way, filterer);
             }
             Element::Relation(el_rel) => {
-                let mut relation = RawRelation {
-                    global_id: el_rel.id() as u64,
-                    way_refs: Vec::<RelationWayRef>::default(),
-                    tags: RawTags::default(),
-                };
+                let mut relation = ParsedRelation::new(el_rel.id() as u64);
                 for (key, value) in el_rel.tags() {
                     relation.tags.insert(key.to_string(), value.to_string());
                 }
-                for way in el_rel.members() {
-                    if way.member_type == RelMemberType::Way {
-                        if let Some(local_id) = entity_storages.way_storage.translate_id(way.member_id as u64) {
-                            let is_inner = way.role().unwrap() == "inner";
-                            relation.way_refs.push(RelationWayRef {
-                                way_id: local_id,
-                                is_inner,
-                            });
-                        }
-                    }
-                }
-                if relation.tags.iter().any(|(k, v)| k == "type" && v == "multipolygon") {
-                    let segments = relation.to_segments(&entity_storages);
-                    if let Some(polygons) = find_polygons_in_multipolygon(relation.global_id, &segments) {
-                        let mut multipolygon = Multipolygon {
-                            global_id: relation.global_id,
-                            polygon_ids: Vec::new(),
-                            tags: relation.tags,
-                        };
-                        for poly in polygons {
-                            multipolygon.polygon_ids.push(entity_storages.polygon_storage.len());
-                            entity_storages.polygon_storage.push(poly);
-                        }
-                        elem_count += 1;
-                        entity_storages
-                            .multipolygon_storage
-                            .add(relation.global_id, multipolygon);
-                    }
+                for way in el_rel
+                    .members()
+                    .filter(|member| member.member_type == RelMemberType::Way)
+                {
+                    relation.way_refs.push(ParsedRelationWay::new(
+                        way.member_id as OsmRef,
+                        way.role().unwrap() == "inner",
+                    ));
                 }
             }
             Element::Node(_) => panic!(),
         }
         if elem_count % 100_000 == 0 {
-            print_storage_stats(&entity_storages);
+            entity_storages.print_short_stats();
         }
     })?;
 
-    print_storage_stats(&entity_storages);
+    entity_storages.print_short_stats();
 
     Ok(entity_storages)
 }
 
-fn parse_osm_xml<R: BufRead>(mut parser: Reader<R>) -> Result<EntityStorages> {
-    let mut entity_storages = EntityStorages {
-        node_storage: OsmEntityStorage::new(),
-        way_storage: OsmEntityStorage::new(),
-        polygon_storage: Vec::new(),
-        multipolygon_storage: OsmEntityStorage::new(),
-    };
-
+fn parse_osm_xml<P: AsRef<Path>>(input: P, filterer: Option<&Filterer>) -> Result<Parsed> {
+    let mut entity_storages = Parsed::new();
     let mut elem_count = 0;
+    let input_file = File::open(input.as_ref()).context(format!(
+        "Failed to open {} for reading",
+        input.as_ref().to_string_lossy()
+    ))?;
+    let mut parser = Reader::from_reader(BufReader::new(input_file));
 
     println!("Parsing XML");
     let mut buf = Vec::new();
@@ -206,10 +122,11 @@ fn parse_osm_xml<R: BufRead>(mut parser: Reader<R>) -> Result<EntityStorages> {
                 &mut start.attributes(),
                 &mut entity_storages,
                 have_subelements,
+                filterer,
             )?;
             elem_count += 1;
             if elem_count % 100_000 == 0 {
-                print_storage_stats(&entity_storages);
+                entity_storages.print_short_stats();
             }
             Ok(())
         };
@@ -223,7 +140,7 @@ fn parse_osm_xml<R: BufRead>(mut parser: Reader<R>) -> Result<EntityStorages> {
         buf.clear();
     }
 
-    print_storage_stats(&entity_storages);
+    entity_storages.print_full_stats();
 
     Ok(entity_storages)
 }
@@ -232,66 +149,35 @@ fn process_element<R: BufRead>(
     parser: &mut Reader<R>,
     name: &[u8],
     attrs: &mut Attributes,
-    entity_storages: &mut EntityStorages,
+    entity_storages: &mut Parsed,
     have_subelements: bool,
+    filterer: Option<&Filterer>,
 ) -> Result<()> {
     match name {
         b"node" => {
-            let mut node = RawNode {
-                global_id: get_id(parser, name, attrs)?,
-                lat: parse_required_attr(parser, name, attrs, b"lat")?,
-                lon: parse_required_attr(parser, name, attrs, b"lon")?,
-                tags: RawTags::default(),
-            };
+            let mut node = ParsedNode::new(
+                get_id(parser, name, attrs)?,
+                parse_required_attr(parser, name, attrs, b"lat")?,
+                parse_required_attr(parser, name, attrs, b"lon")?,
+            );
             if have_subelements {
-                process_subelements(name, &mut node, entity_storages, process_node_subelement, parser)?;
+                process_subelements(name, &mut node, process_node_subelement, parser)?;
             }
-            entity_storages.node_storage.add(node.global_id, node);
+            entity_storages.add_node(node, filterer);
         }
         b"way" => {
-            let mut way = RawWay {
-                global_id: get_id(parser, name, attrs)?,
-                node_ids: RawRefs::default(),
-                tags: RawTags::default(),
-            };
+            let mut way = ParsedWay::new(get_id(parser, name, attrs)?);
             if have_subelements {
-                process_subelements(name, &mut way, entity_storages, process_way_subelement, parser)?;
+                process_subelements(name, &mut way, process_way_subelement, parser)?;
             }
-            postprocess_node_refs(&mut way.node_ids);
-            entity_storages.way_storage.add(way.global_id, way);
+            entity_storages.add_way(way, filterer);
         }
         b"relation" => {
-            let mut relation = RawRelation {
-                global_id: get_id(parser, name, attrs)?,
-                way_refs: Vec::<RelationWayRef>::default(),
-                tags: RawTags::default(),
-            };
+            let mut relation = ParsedRelation::new(get_id(parser, name, attrs)?);
             if have_subelements {
-                process_subelements(
-                    name,
-                    &mut relation,
-                    entity_storages,
-                    process_relation_subelement,
-                    parser,
-                )?;
+                process_subelements(name, &mut relation, process_relation_subelement, parser)?;
             }
-            if relation.tags.iter().any(|(k, v)| k == "type" && v == "multipolygon") {
-                let segments = relation.to_segments(entity_storages);
-                if let Some(polygons) = find_polygons_in_multipolygon(relation.global_id, &segments) {
-                    let mut multipolygon = Multipolygon {
-                        global_id: relation.global_id,
-                        polygon_ids: Vec::new(),
-                        tags: relation.tags,
-                    };
-                    for poly in polygons {
-                        multipolygon.polygon_ids.push(entity_storages.polygon_storage.len());
-                        entity_storages.polygon_storage.push(poly);
-                    }
-                    entity_storages
-                        .multipolygon_storage
-                        .add(relation.global_id, multipolygon);
-                }
-            }
+            entity_storages.add_relation(relation, filterer);
         }
         _ => {}
     }
@@ -301,12 +187,11 @@ fn process_element<R: BufRead>(
 fn process_subelements<E: Default, R: BufRead, F>(
     entity_name: &[u8],
     entity: &mut E,
-    entity_storages: &EntityStorages,
     subelement_processor: F,
     parser: &mut Reader<R>,
 ) -> Result<()>
 where
-    F: Fn(&mut Reader<R>, &mut E, &EntityStorages, &[u8], &mut Attributes) -> Result<()>,
+    F: Fn(&mut Reader<R>, &mut E, &[u8], &mut Attributes) -> Result<()>,
 {
     let mut buf = Vec::new();
     loop {
@@ -317,13 +202,9 @@ where
         match e {
             Event::Eof => break,
             Event::End(end) if end.local_name().as_ref() == entity_name => break,
-            Event::Start(start) | Event::Empty(start) => subelement_processor(
-                parser,
-                entity,
-                entity_storages,
-                start.local_name().as_ref(),
-                &mut start.attributes(),
-            )?,
+            Event::Start(start) | Event::Empty(start) => {
+                subelement_processor(parser, entity, start.local_name().as_ref(), &mut start.attributes())?
+            }
             _ => {}
         }
         buf.clear();
@@ -331,31 +212,9 @@ where
     Ok(())
 }
 
-fn postprocess_node_refs(refs: &mut RawRefs) {
-    if refs.is_empty() {
-        return;
-    }
-
-    let mut seen_node_pairs = HashSet::<(usize, usize)>::default();
-    let mut refs_without_duplicates = vec![refs[0]];
-
-    for idx in 1..refs.len() {
-        let cur = refs[idx];
-        let prev = refs[idx - 1];
-        let node_pair = (cur, prev);
-        if !seen_node_pairs.contains(&node_pair) && !seen_node_pairs.contains(&(prev, cur)) {
-            seen_node_pairs.insert(node_pair);
-            refs_without_duplicates.push(cur);
-        }
-    }
-
-    *refs = refs_without_duplicates;
-}
-
 fn process_node_subelement<R: BufRead>(
     parser: &mut Reader<R>,
-    node: &mut RawNode,
-    _: &EntityStorages,
+    node: &mut ParsedNode,
     sub_name: &[u8],
     sub_attrs: &mut Attributes,
 ) -> Result<()> {
@@ -364,8 +223,7 @@ fn process_node_subelement<R: BufRead>(
 
 fn process_way_subelement<R: BufRead>(
     parser: &mut Reader<R>,
-    way: &mut RawWay,
-    entity_storages: &EntityStorages,
+    way: &mut ParsedWay,
     sub_name: &[u8],
     sub_attrs: &mut Attributes,
 ) -> Result<()> {
@@ -373,17 +231,15 @@ fn process_way_subelement<R: BufRead>(
         return Ok(());
     }
     if sub_name == b"nd" {
-        if let Some(r) = get_ref(parser, sub_name, sub_attrs, &entity_storages.node_storage)? {
-            way.node_ids.push(r);
-        }
+        way.nodes_ref
+            .push(parse_required_attr(parser, sub_name, sub_attrs, b"ref")?);
     }
     Ok(())
 }
 
 fn process_relation_subelement<R: BufRead>(
     parser: &mut Reader<R>,
-    relation: &mut RawRelation,
-    entity_storages: &EntityStorages,
+    relation: &mut ParsedRelation,
     sub_name: &[u8],
     sub_attrs: &mut Attributes,
 ) -> Result<()> {
@@ -391,10 +247,10 @@ fn process_relation_subelement<R: BufRead>(
         return Ok(());
     }
     if sub_name == b"member" && get_required_attr(parser, sub_name, sub_attrs, b"type")? == "way" {
-        if let Some(r) = get_ref(parser, sub_name, sub_attrs, &entity_storages.way_storage)? {
-            let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
-            relation.way_refs.push(RelationWayRef { way_id: r, is_inner });
-        }
+        let osm_ref = parse_required_attr(parser, sub_name, sub_attrs, b"ref")?;
+        let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
+
+        relation.way_refs.push(ParsedRelationWay::new(osm_ref, is_inner));
     }
     Ok(())
 }
@@ -444,21 +300,11 @@ where
     Ok(parsed_value)
 }
 
-fn get_ref<E: Default, R: BufRead>(
-    parser: &mut Reader<R>,
-    elem_name: &[u8],
-    attrs: &mut Attributes,
-    storage: &OsmEntityStorage<E>,
-) -> Result<Option<usize>> {
-    let reference = parse_required_attr(parser, elem_name, attrs, b"ref")?;
-    Ok(storage.translate_id(reference))
-}
-
 fn try_add_tag<R: BufRead>(
     parser: &mut Reader<R>,
     elem_name: &[u8],
     attrs: &mut Attributes,
-    tags: &mut RawTags,
+    tags: &mut ParsedTags,
 ) -> Result<bool> {
     if elem_name != b"tag" {
         return Ok(false);
@@ -473,18 +319,30 @@ fn get_id<R: BufRead>(parser: &mut Reader<R>, elem_name: &[u8], attrs: &mut Attr
     parse_required_attr(parser, elem_name, attrs, b"id")
 }
 
-pub(super) type RawRefs = Vec<usize>;
-pub(super) type RawTags = BTreeMap<String, String>;
+pub(super) type OsmRef = u64;
+
+pub(crate) type ParsedTags = BTreeMap<String, String>;
 
 #[derive(Default)]
-pub(super) struct RawNode {
-    pub(super) global_id: u64,
+pub(super) struct ParsedNode {
+    pub(super) id: OsmRef,
     pub(super) lat: f64,
     pub(super) lon: f64,
-    pub(super) tags: RawTags,
+    pub(super) tags: ParsedTags,
 }
 
-impl coords::Coords for RawNode {
+impl ParsedNode {
+    pub(super) fn new(id: OsmRef, lat: f64, lon: f64) -> ParsedNode {
+        ParsedNode {
+            id,
+            lat,
+            lon,
+            tags: ParsedTags::new(),
+        }
+    }
+}
+
+impl coords::Coords for ParsedNode {
     fn lat(&self) -> f64 {
         self.lat
     }
@@ -495,52 +353,511 @@ impl coords::Coords for RawNode {
 }
 
 #[derive(Default)]
-pub(super) struct RawWay {
-    pub(super) global_id: u64,
-    pub(super) node_ids: RawRefs,
-    pub(super) tags: RawTags,
+pub(super) struct ParsedWay {
+    pub(super) id: OsmRef,
+    pub(super) tags: ParsedTags,
+    pub(super) nodes_ref: Vec<OsmRef>,
 }
 
-pub struct RelationWayRef {
-    way_id: usize,
+impl ParsedWay {
+    fn new(id: OsmRef) -> ParsedWay {
+        ParsedWay {
+            id,
+            tags: ParsedTags::new(),
+            nodes_ref: Vec::new(),
+        }
+    }
+
+    fn deduplicate_refs_pairs(&self) -> Vec<OsmRef> {
+        if self.nodes_ref.is_empty() {
+            return vec![];
+        }
+
+        let mut seen_node_pairs = HashSet::<(OsmRef, OsmRef)>::default();
+        let mut refs_without_duplicates = vec![self.nodes_ref[0]];
+
+        for idx in 1..self.nodes_ref.len() {
+            let cur = self.nodes_ref[idx];
+            let prev = self.nodes_ref[idx - 1];
+            let node_pair = (cur, prev);
+            if !seen_node_pairs.contains(&node_pair) && !seen_node_pairs.contains(&(prev, cur)) {
+                seen_node_pairs.insert(node_pair);
+                refs_without_duplicates.push(cur);
+            }
+        }
+
+        return refs_without_duplicates;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ParsedRelationWay {
+    id: OsmRef,
     is_inner: bool,
 }
 
-#[derive(Default)]
-struct RawRelation {
-    global_id: u64,
-    way_refs: Vec<RelationWayRef>,
-    tags: RawTags,
+impl ParsedRelationWay {
+    pub(super) fn new(id: OsmRef, is_inner: bool) -> ParsedRelationWay {
+        ParsedRelationWay { id, is_inner }
+    }
 }
 
-impl RawRelation {
-    fn to_segments(&self, entity_storages: &EntityStorages) -> Vec<NodeDescPair> {
-        let create_node_desc = |way: &RawWay, node_idx_in_way| {
-            let node_id = way.node_ids[node_idx_in_way];
-            let node = &entity_storages.node_storage.entities[node_id];
-            NodeDesc::new(node_id, node.lat, node.lon)
+pub(super) type ParsedPolygonId = u64;
+
+#[derive(Default, Clone)]
+pub(super) struct ParsedPolygon {
+    pub(super) nodes: Vec<OsmRef>,
+}
+
+impl ParsedPolygon {
+    pub(super) fn get_id(&self) -> ParsedPolygonId {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+}
+
+impl Hash for ParsedPolygon {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.nodes.hash(state);
+    }
+}
+
+#[derive(Default, Clone)]
+pub(super) struct ParsedRelation {
+    pub(super) id: OsmRef,
+    pub(super) tags: ParsedTags,
+    pub(super) way_refs: Vec<ParsedRelationWay>,
+    pub(super) polygons: Vec<ParsedPolygonId>,
+}
+
+impl ParsedRelation {
+    fn new(id: OsmRef) -> ParsedRelation {
+        ParsedRelation {
+            id,
+            tags: ParsedTags::new(),
+            way_refs: Vec::new(),
+            polygons: Vec::new(),
+        }
+    }
+
+    fn is_multipolygon(&self) -> bool {
+        return self.tags.iter().any(|(k, v)| k == "type" && v == "multipolygon");
+    }
+}
+
+pub(super) type LocalRef = usize;
+
+#[derive(Copy, Clone)]
+pub(super) struct IndexedNode<'a> {
+    pub(super) node: &'a ParsedNode,
+    pub(super) local_id: LocalRef,
+}
+
+pub(super) struct IndexedWay<'a> {
+    pub(super) way: &'a ParsedWay,
+    pub(super) nodes_ref: Vec<LocalRef>,
+}
+
+pub(super) struct IndexedPolygon {
+    pub(super) nodes_ref: Vec<LocalRef>,
+}
+
+pub(super) struct IndexedRelation<'a> {
+    pub(super) relation: &'a ParsedRelation,
+    pub(super) polygons_ref: Vec<LocalRef>,
+}
+
+pub(super) struct Indexed<'a> {
+    pub(super) nodes: Vec<IndexedNode<'a>>,
+    pub(super) ways: Vec<IndexedWay<'a>>,
+    pub(super) polygons: Vec<IndexedPolygon>,
+    pub(super) relations: Vec<IndexedRelation<'a>>,
+
+    pub(super) nodes_ref: HashMap<OsmRef, LocalRef>,
+    pub(super) polygons_ref: HashMap<OsmRef, LocalRef>,
+}
+
+impl<'a> Indexed<'a> {
+    pub(super) fn new() -> Indexed<'static> {
+        Indexed {
+            nodes: Vec::new(),
+            ways: Vec::new(),
+            polygons: Vec::new(),
+            relations: Vec::new(),
+
+            nodes_ref: HashMap::new(),
+            polygons_ref: HashMap::new(),
+        }
+    }
+
+    pub(self) fn add_node_ref(&mut self, node: &'a ParsedNode) -> LocalRef {
+        match self.nodes_ref.get(&node.id) {
+            Some(local_id) => *local_id,
+            None => {
+                let node_ref = IndexedNode {
+                    node,
+                    local_id: self.nodes.len(),
+                };
+
+                self.nodes_ref.insert(node.id, node_ref.local_id);
+                self.nodes.push(node_ref);
+
+                node_ref.local_id
+            }
+        }
+    }
+
+    pub(self) fn ensure_node_ref(&mut self, osm_node_id: OsmRef, parsed: &'a Parsed) -> Option<LocalRef> {
+        match self.nodes_ref.get(&osm_node_id) {
+            Some(local_id) => Some(*local_id),
+            None => {
+                if let Some(node) = parsed.nodes.get(&osm_node_id) {
+                    Some(self.add_node_ref(node))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub(self) fn build_nodes_index(&mut self, parsed: &'a Parsed) {
+        for (_, node) in parsed.nodes.iter() {
+            if node.tags.is_empty() {
+                continue;
+            }
+            self.add_node_ref(node);
+        }
+    }
+
+    pub(self) fn build_ways_index(&mut self, parsed: &'a Parsed) {
+        for (_, way) in parsed.ways.iter() {
+            if way.tags.is_empty() {
+                continue;
+            }
+            let mut way_ref = IndexedWay {
+                way,
+                nodes_ref: Vec::new(),
+            };
+
+            for node_osm_id in way.nodes_ref.iter() {
+                way_ref
+                    .nodes_ref
+                    .push(self.ensure_node_ref(*node_osm_id, parsed).unwrap());
+            }
+
+            self.ways.push(way_ref);
+        }
+    }
+
+    pub(self) fn ensure_polygon(&mut self, polygon_id: &ParsedPolygonId, parsed: &'a Parsed) -> LocalRef {
+        match self.polygons_ref.get(&polygon_id) {
+            Some(local_id) => *local_id,
+            None => {
+                let polygon = parsed.polygons.get(polygon_id).unwrap();
+                let local_id = self.polygons.len();
+                let indexed_poly = IndexedPolygon {
+                    nodes_ref: polygon
+                        .nodes
+                        .iter()
+                        .map(|osm_node_id| self.ensure_node_ref(*osm_node_id, parsed).unwrap())
+                        .collect(),
+                };
+
+                self.polygons.push(indexed_poly);
+                self.polygons_ref.insert(*polygon_id, local_id);
+
+                local_id
+            }
+        }
+    }
+
+    pub(self) fn build_relations_index(&mut self, parsed: &'a Parsed) {
+        for (_, relation) in parsed.relations.iter() {
+            if relation.tags.is_empty() {
+                continue;
+            }
+
+            let indexed_relation = IndexedRelation {
+                relation,
+                polygons_ref: relation
+                    .polygons
+                    .iter()
+                    .map(|polygon_id| self.ensure_polygon(polygon_id, parsed))
+                    .collect(),
+            };
+
+            self.relations.push(indexed_relation);
+        }
+    }
+
+    pub(super) fn build_from(&mut self, parsed: &'a Parsed) {
+        self.nodes.clear();
+        self.ways.clear();
+        self.nodes_ref.clear();
+        self.polygons_ref.clear();
+        self.build_relations_index(parsed);
+        self.build_ways_index(parsed);
+        self.build_nodes_index(parsed);
+    }
+
+    pub(super) fn print_stats(&self) {
+        println!(
+            "Indexed {} nodes, {} ways, {} polygons, {} relations",
+            self.nodes.len(),
+            self.ways.len(),
+            self.polygons.len(),
+            self.relations.len()
+        );
+    }
+}
+
+pub(super) struct Parsed {
+    pub(super) nodes: HashMap<OsmRef, ParsedNode>,
+    pub(super) ways: HashMap<OsmRef, ParsedWay>,
+    pub(super) relations: HashMap<OsmRef, ParsedRelation>,
+
+    pub(super) polygons: HashMap<ParsedPolygonId, ParsedPolygon>,
+
+    pub(super) count_tags: usize,
+    pub(super) count_notag_nodes: usize,
+    pub(super) count_notag_ways: usize,
+    pub(super) count_norefs_ways: usize,
+    pub(super) count_notag_relations: usize,
+    pub(super) count_norefs_relations: usize,
+    pub(super) count_deduplicated_ways: usize,
+
+    pub(super) count_filtered_nodes: usize,
+    pub(super) count_filtered_ways: usize,
+    pub(super) count_filtered_relations: usize,
+    pub(super) count_nomultipolygons: usize,
+    pub(super) count_nopolygons_relations: usize,
+    pub(super) count_filtered_tags: usize,
+}
+
+impl Parsed {
+    pub(super) fn new() -> Parsed {
+        Parsed {
+            nodes: HashMap::new(),
+            ways: HashMap::new(),
+            relations: HashMap::new(),
+
+            polygons: HashMap::new(),
+
+            count_tags: 0,
+            count_notag_nodes: 0,
+            count_notag_ways: 0,
+            count_norefs_ways: 0,
+            count_notag_relations: 0,
+            count_norefs_relations: 0,
+            count_deduplicated_ways: 0,
+
+            count_filtered_nodes: 0,
+            count_filtered_ways: 0,
+            count_filtered_relations: 0,
+            count_nomultipolygons: 0,
+            count_nopolygons_relations: 0,
+            count_filtered_tags: 0,
+        }
+    }
+
+    pub(super) fn add_node(&mut self, node: ParsedNode, filterer: Option<&Filterer>) {
+        if node.tags.is_empty() {
+            self.count_notag_nodes += 1;
+        } else if filterer.is_some() {
+            let filtered_tags = filterer.unwrap().filter_tags(vec![ObjectType::Node], &node.tags);
+            if filtered_tags.len() != node.tags.len() {
+                let mut filtered_node = ParsedNode::new(node.id, node.lat, node.lon);
+
+                if filtered_tags.is_empty() {
+                    self.count_filtered_nodes += 1;
+                } else {
+                    self.count_filtered_tags += node.tags.len() - filtered_tags.len();
+                    self.count_tags += filtered_tags.len();
+                }
+
+                filtered_node.tags = filtered_tags;
+                /* insert truncated node: may needed for ways or relations */
+                self.nodes.insert(node.id, filtered_node);
+                return;
+            }
+        }
+
+        self.count_tags += node.tags.len();
+        self.nodes.insert(node.id, node);
+    }
+
+    pub(super) fn add_way(&mut self, way: ParsedWay, filterer: Option<&Filterer>) {
+        let mut add_way_simple = |way: ParsedWay| {
+            if way.nodes_ref.len() == 0 {
+                self.count_norefs_ways += 1;
+            }
+
+            self.count_tags += way.tags.len();
+            let node_refs = way.deduplicate_refs_pairs();
+            if node_refs.len() != way.nodes_ref.len() {
+                let mut clear_way = ParsedWay::new(way.id);
+
+                clear_way.tags = way.tags.clone();
+                clear_way.nodes_ref = node_refs;
+                self.count_deduplicated_ways += 1;
+                self.ways.insert(way.id, clear_way);
+            } else {
+                self.ways.insert(way.id, way);
+            }
         };
-        self.way_refs
+
+        if way.tags.len() == 0 {
+            self.count_notag_ways += 1;
+        } else if filterer.is_some() {
+            let filtered_tags = filterer
+                .unwrap()
+                .filter_tags(vec![ObjectType::Way, ObjectType::Area], &way.tags);
+
+            if filtered_tags.len() != way.tags.len() {
+                let mut filtered_way = ParsedWay::new(way.id);
+                filtered_way.nodes_ref = way.nodes_ref.clone();
+
+                if filtered_tags.len() == 0 {
+                    self.count_filtered_ways += 1;
+                } else {
+                    self.count_filtered_tags += way.tags.len() - filtered_tags.len();
+                }
+
+                filtered_way.tags = filtered_tags;
+                add_way_simple(filtered_way);
+                return;
+            }
+        }
+        add_way_simple(way);
+    }
+
+    pub(self) fn add_multipolygon(&mut self, relation: ParsedRelation) {
+        let segments = self.split_relation_to_segments(&relation);
+
+        if let Some(polygons) = find_polygons_in_multipolygon(relation.id, &segments) {
+            let mut poly_relation = relation.clone();
+
+            for poly in polygons {
+                let polygon_id = poly.get_id();
+
+                poly_relation.polygons.push(polygon_id);
+                self.polygons.insert(polygon_id, poly);
+            }
+
+            self.count_tags += poly_relation.tags.len();
+            self.relations.insert(relation.id, poly_relation);
+        } else {
+            self.count_nopolygons_relations += 1;
+        }
+    }
+
+    pub(super) fn add_relation(&mut self, relation: ParsedRelation, filterer: Option<&Filterer>) {
+        if relation.tags.len() == 0 {
+            self.count_notag_relations += 1;
+            return;
+        }
+
+        if !relation.is_multipolygon() {
+            self.count_nomultipolygons += 1;
+            /* do nothing: relation is filtered */
+            return;
+        }
+
+        if filterer.is_some() {
+            let filtered_tags = filterer.unwrap().filter_tags(vec![ObjectType::Area], &relation.tags);
+
+            if filtered_tags.is_empty() {
+                self.count_filtered_relations += 1;
+                return;
+            }
+
+            if filtered_tags.len() != relation.tags.len() {
+                let mut filtered_relation = ParsedRelation::new(relation.id);
+
+                self.count_filtered_tags += relation.tags.len() - filtered_tags.len();
+                filtered_relation.tags = filtered_tags;
+
+                self.add_multipolygon(relation);
+                return;
+            }
+        }
+
+        if relation.tags.is_empty() {
+            self.count_filtered_relations += 1;
+            return;
+        }
+
+        if relation.way_refs.is_empty() {
+            /* do nothing: relation is filtered */
+            self.count_norefs_relations += 1;
+            return;
+        }
+
+        self.add_multipolygon(relation);
+    }
+
+    pub(super) fn print_short_stats(&self) {
+        println!(
+            "Contains {} nodes, {} ways, {} relations, {} polygons",
+            self.nodes.len(),
+            self.ways.len(),
+            self.relations.len(),
+            self.polygons.len(),
+        );
+    }
+
+    pub(super) fn print_full_stats(&self) {
+        println!(
+            "Contains {} nodes ({} truncated), {} ways ({} truncated), {} relations ({} filtered, {} no multipolygons, {} without polygons), {} polygons, {} tags ({} filtered)",
+            self.nodes.len(),
+            self.count_filtered_nodes,
+            self.ways.len(),
+            self.count_filtered_ways,
+            self.relations.len(),
+            self.count_filtered_relations,
+            self.count_nomultipolygons,
+            self.count_nopolygons_relations,
+            self.polygons.len(),
+            self.count_tags,
+            self.count_filtered_tags,
+        );
+        println!(
+            "Without tags: {} nodes, {} ways, {} relations",
+            self.count_notag_nodes, self.count_notag_ways, self.count_norefs_relations,
+        );
+        println!(
+            "Without refs: {} ways, {} relations",
+            self.count_norefs_ways, self.count_norefs_relations
+        );
+        println!("Deduplicated node pairs in ways: {}", self.count_deduplicated_ways);
+    }
+
+    pub(super) fn split_relation_to_segments(&self, relation: &ParsedRelation) -> Vec<NodeDescPair> {
+        let create_node_desc = |node_osm_ref: OsmRef| {
+            let node = self
+                .nodes
+                .get(&node_osm_ref)
+                .unwrap_or_else(|| panic!("Input file not completed: not found node {}", node_osm_ref));
+
+            NodeDesc::new(node_osm_ref, node.lat, node.lon)
+        };
+
+        relation
+            .way_refs
             .iter()
-            .flat_map(|way_ref| {
-                let way = &entity_storages.way_storage.entities[way_ref.way_id];
-                (1..way.node_ids.len()).map(move |idx| {
+            .map(|way_ref| (self.ways.get(&way_ref.id), way_ref.is_inner))
+            .filter(|(option_way, _)| option_way.is_some())
+            .map(|(option_way, is_inner)| (option_way.unwrap(), is_inner))
+            .flat_map(|(way, is_inner)| {
+                (1..way.nodes_ref.len()).map(move |idx| {
                     NodeDescPair::new(
-                        create_node_desc(way, idx - 1),
-                        create_node_desc(way, idx),
-                        way_ref.is_inner,
+                        create_node_desc(way.nodes_ref[idx - 1]),
+                        create_node_desc(way.nodes_ref[idx]),
+                        is_inner,
                     )
                 })
             })
             .collect()
     }
-}
-
-pub(super) type Polygon = RawRefs;
-
-#[derive(Default)]
-pub(super) struct Multipolygon {
-    pub(super) global_id: u64,
-    pub(super) polygon_ids: RawRefs,
-    pub(super) tags: RawTags,
 }

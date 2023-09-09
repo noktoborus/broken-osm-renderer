@@ -1,15 +1,15 @@
-use crate::geodata::importer::Polygon;
+use crate::geodata::importer::{OsmRef, ParsedPolygon};
 use std::collections::{HashMap, HashSet};
 
 type NodePos = (u64, u64);
 
 pub(super) struct NodeDesc {
-    id: usize,
+    id: OsmRef,
     pos: NodePos,
 }
 
 impl NodeDesc {
-    pub(super) fn new(id: usize, lat: f64, lon: f64) -> NodeDesc {
+    pub(super) fn new(id: OsmRef, lat: f64, lon: f64) -> NodeDesc {
         NodeDesc {
             id,
             pos: (lat.to_bits(), lon.to_bits()),
@@ -30,26 +30,26 @@ impl NodeDescPair {
 }
 
 pub(super) fn find_polygons_in_multipolygon(
-    relation_id: u64,
+    relation_id: OsmRef,
     relation_segments: &[NodeDescPair],
-) -> Option<Vec<Polygon>> {
+) -> Option<Vec<ParsedPolygon>> {
     let connections = get_connections(relation_segments);
     let mut available_segments = vec![true; relation_segments.len()];
     find_rings(relation_id, relation_segments, &connections, &mut available_segments).map(|all_rings| {
         let mut polygons = Vec::new();
         for ring in all_rings {
-            let mut polygon = Polygon::default();
+            let mut polygon = ParsedPolygon::default();
             for idx in 0..ring.len() {
                 let seg = &relation_segments[ring[idx]];
                 if idx == 0 {
-                    polygon.push(seg.node1.id);
+                    polygon.nodes.push(seg.node1.id);
                 }
-                let last_node = polygon[polygon.len() - 1];
-                polygon.push(if last_node == seg.node1.id {
-                    seg.node2.id
+                let last_node = polygon.nodes.last().unwrap();
+                if *last_node == seg.node1.id {
+                    polygon.nodes.push(seg.node2.id);
                 } else {
-                    seg.node1.id
-                });
+                    polygon.nodes.push(seg.node1.id);
+                };
             }
             polygons.push(polygon);
         }

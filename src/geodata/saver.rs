@@ -1,10 +1,14 @@
-use crate::geodata::importer::{EntityStorages, Multipolygon, Polygon, RawNode, RawRefs, RawWay};
+use crate::geodata::importer::{Indexed, IndexedNode, IndexedPolygon, IndexedRelation, IndexedWay, ParsedNode};
+#[cfg(test)]
+use crate::geodata::importer::{OsmRef, Parsed};
 use crate::tile;
 use anyhow::{bail, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
+
+pub(super) type RawRefs = Vec<usize>;
 
 #[derive(Default)]
 struct TileReferences {
@@ -18,21 +22,14 @@ struct TileIdToReferences {
     refs: BTreeMap<(u32, u32), TileReferences>,
 }
 
-pub(super) fn save_to_internal_format(writer: &mut dyn Write, entity_storages: &EntityStorages) -> Result<()> {
+pub(super) fn save_to_internal_format(writer: &mut dyn Write, indexed: &Indexed) -> Result<()> {
     let mut buffered_data = BufferedData::default();
-    let nodes = &entity_storages.node_storage.get_entities();
-    save_nodes(writer, nodes, &mut buffered_data)?;
+    save_nodes(writer, &indexed.nodes, &mut buffered_data)?;
+    save_ways(writer, &indexed.ways, &mut buffered_data)?;
+    save_polygons(writer, &indexed.polygons, &mut buffered_data)?;
+    save_relations(writer, &indexed.relations, &mut buffered_data)?;
 
-    let ways = &entity_storages.way_storage.get_entities();
-    save_ways(writer, ways, &mut buffered_data)?;
-
-    let polygons = &entity_storages.polygon_storage;
-    save_polygons(writer, polygons, &mut buffered_data)?;
-
-    let multipolygons = &entity_storages.multipolygon_storage.get_entities();
-    save_multipolygons(writer, multipolygons, &mut buffered_data)?;
-
-    let tile_references = get_tile_references(entity_storages);
+    let tile_references = get_tile_references(indexed);
     save_tile_references(writer, &tile_references, &mut buffered_data)?;
 
     buffered_data.save(writer)?;
@@ -41,7 +38,7 @@ pub(super) fn save_to_internal_format(writer: &mut dyn Write, entity_storages: &
 }
 
 impl TileIdToReferences {
-    fn tile_ref_by_node(&mut self, node: &RawNode) -> &mut TileReferences {
+    fn tile_ref_by_node(&mut self, node: &ParsedNode) -> &mut TileReferences {
         let node_tile = tile::coords_to_max_zoom_tile(node);
         self.tile_ref_by_xy(node_tile.x, node_tile.y)
     }
@@ -51,57 +48,59 @@ impl TileIdToReferences {
     }
 }
 
-fn save_nodes(writer: &mut dyn Write, nodes: &[RawNode], data: &mut BufferedData) -> Result<()> {
+fn save_nodes(writer: &mut dyn Write, indexes: &[IndexedNode], data: &mut BufferedData) -> Result<()> {
     let mut tags_counter: usize = 0;
+    let mut nodes_counter: usize = 0;
 
-    writer.write_u32::<LittleEndian>(to_u32_safe(nodes.len())?)?;
-    for node in nodes {
-        writer.write_u64::<LittleEndian>(node.global_id)?;
-        writer.write_f64::<LittleEndian>(node.lat)?;
-        writer.write_f64::<LittleEndian>(node.lon)?;
-        save_tags(writer, &node.tags, data)?;
-        tags_counter += node.tags.len();
+    writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
+    for node_ref in indexes {
+        writer.write_u64::<LittleEndian>(node_ref.node.id)?;
+        writer.write_f64::<LittleEndian>(node_ref.node.lat)?;
+        writer.write_f64::<LittleEndian>(node_ref.node.lon)?;
+        nodes_counter += 1;
+        save_tags(writer, &node_ref.node.tags, data)?;
+        tags_counter += node_ref.node.tags.len();
     }
-    println!("writed {} nodes with {} tags", nodes.len(), tags_counter);
+    println!("writed {} nodes with {} tags", nodes_counter, tags_counter);
     Ok(())
 }
 
-fn save_ways(writer: &mut dyn Write, ways: &[RawWay], data: &mut BufferedData) -> Result<()> {
+fn save_ways(writer: &mut dyn Write, indexes: &[IndexedWay], data: &mut BufferedData) -> Result<()> {
     let mut tags_counter = 0;
-    writer.write_u32::<LittleEndian>(to_u32_safe(ways.len())?)?;
-    for way in ways {
-        writer.write_u64::<LittleEndian>(way.global_id)?;
-        save_refs(writer, way.node_ids.iter(), data)?;
-        save_tags(writer, &way.tags, data)?;
-        tags_counter += way.tags.len();
+    let mut ways_counter = 0;
+
+    writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
+    for way_ref in indexes {
+        writer.write_u64::<LittleEndian>(way_ref.way.id)?;
+        save_refs(writer, way_ref.nodes_ref.iter(), data)?;
+        save_tags(writer, &way_ref.way.tags, data)?;
+        tags_counter += way_ref.way.tags.len();
+        ways_counter += 1;
     }
-    println!("writed {} ways with {} tags", ways.len(), tags_counter);
+
+    println!("writed {} ways with {} tags", ways_counter, tags_counter);
     Ok(())
 }
 
-fn save_polygons(writer: &mut dyn Write, polygons: &[Polygon], data: &mut BufferedData) -> Result<()> {
-    writer.write_u32::<LittleEndian>(to_u32_safe(polygons.len())?)?;
-    for polygon in polygons {
-        save_refs(writer, polygon.iter(), data)?;
+fn save_polygons(writer: &mut dyn Write, indexes: &[IndexedPolygon], data: &mut BufferedData) -> Result<()> {
+    writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
+    for polygon in indexes {
+        save_refs(writer, polygon.nodes_ref.iter(), data)?;
     }
-    println!("writed {} polygons", polygons.len());
+    println!("writed {} polygons", indexes.len());
     Ok(())
 }
 
-fn save_multipolygons(writer: &mut dyn Write, multipolygons: &[Multipolygon], data: &mut BufferedData) -> Result<()> {
+fn save_relations(writer: &mut dyn Write, indexes: &[IndexedRelation], data: &mut BufferedData) -> Result<()> {
     let mut tags_counter: usize = 0;
-    writer.write_u32::<LittleEndian>(to_u32_safe(multipolygons.len())?)?;
-    for multipolygon in multipolygons {
-        writer.write_u64::<LittleEndian>(multipolygon.global_id)?;
-        save_refs(writer, multipolygon.polygon_ids.iter(), data)?;
-        save_tags(writer, &multipolygon.tags, data)?;
-        tags_counter += multipolygon.tags.len();
+    writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
+    for rel_ref in indexes {
+        writer.write_u64::<LittleEndian>(rel_ref.relation.id)?;
+        save_refs(writer, rel_ref.polygons_ref.iter(), data)?;
+        save_tags(writer, &rel_ref.relation.tags, data)?;
+        tags_counter += rel_ref.relation.tags.len();
     }
-    println!(
-        "writed {} multipolygons with {} tags",
-        multipolygons.len(),
-        tags_counter
-    );
+    println!("writed {} multipolygons with {} tags", indexes.len(), tags_counter);
     Ok(())
 }
 
@@ -179,27 +178,29 @@ impl BufferedData {
     }
 }
 
-fn get_tile_references(entity_storages: &EntityStorages) -> TileIdToReferences {
+fn get_tile_references(indexed: &Indexed) -> TileIdToReferences {
     let mut result = TileIdToReferences::default();
 
-    let nodes = &entity_storages.node_storage.get_entities();
-    for (i, node) in nodes.iter().enumerate() {
+    for (i, node) in indexed.nodes.iter().map(|node_ref| node_ref.node).enumerate() {
         result.tile_ref_by_node(node).local_node_ids.insert(i);
     }
 
-    for (i, way) in entity_storages.way_storage.get_entities().iter().enumerate() {
-        let node_ids = way.node_ids.iter().map(|idx| &nodes[*idx]);
+    for (i, way) in indexed.ways.iter().enumerate() {
+        let nodes = way
+            .nodes_ref
+            .iter()
+            .map(|node_local_id| indexed.nodes[*node_local_id].node);
 
-        insert_entity_id_to_tiles(&mut result, node_ids, |x| &mut x.local_way_ids, i);
+        insert_entity_id_to_tiles(&mut result, nodes, |x| &mut x.local_way_ids, i);
     }
 
-    let polygons = &entity_storages.polygon_storage;
-    for (i, multipolygon) in entity_storages.multipolygon_storage.get_entities().iter().enumerate() {
+    let polygons = &indexed.polygons;
+    for (i, multipolygon) in indexed.relations.iter().enumerate() {
         let node_ids = multipolygon
-            .polygon_ids
+            .polygons_ref
             .iter()
-            .flat_map(move |poly_id| polygons[*poly_id].iter())
-            .map(|idx| &nodes[*idx]);
+            .flat_map(move |local_poly_id| polygons[*local_poly_id].nodes_ref.iter())
+            .map(|node_local_id| indexed.nodes[*node_local_id].node);
         insert_entity_id_to_tiles(&mut result, node_ids, |x| &mut x.local_multipolygon_ids, i);
     }
 
@@ -212,7 +213,7 @@ fn insert_entity_id_to_tiles<'a, I>(
     get_refs: impl Fn(&mut TileReferences) -> &mut BTreeSet<usize>,
     entity_id: usize,
 ) where
-    I: Iterator<Item = &'a RawNode>,
+    I: Iterator<Item = &'a ParsedNode>,
 {
     let first_node = match nodes.next() {
         Some(n) => n,
@@ -295,15 +296,13 @@ mod tests {
             add_tile(7, 17, false);
         }
 
-        let mut nodes = Vec::new();
+        let mut parsed = Parsed::new();
+
         for idx in 0..tile_ids.len() {
-            nodes.push(RawNode {
-                global_id: idx as u64,
-                lat: 1.0,
-                lon: 1.0,
-                tags: crate::geodata::importer::RawTags::default(),
-            });
+            parsed.add_node(ParsedNode::new(idx as OsmRef, 1.0, 1.0), None);
         }
+        let mut indexed = Indexed::new();
+        indexed.build_from(&parsed);
 
         let mut tile_refs = TileIdToReferences::default();
         for (idx, &(x, y)) in tile_ids.iter().enumerate() {
@@ -320,14 +319,7 @@ mod tests {
         {
             let tmp_file = File::create(&tmp_path).unwrap();
             let mut writer = BufWriter::new(tmp_file);
-
-            let mut data = BufferedData::default();
-            save_nodes(&mut writer, &nodes, &mut data).unwrap();
-            save_ways(&mut writer, &[], &mut data).unwrap();
-            save_polygons(&mut writer, &[], &mut data).unwrap();
-            save_multipolygons(&mut writer, &[], &mut data).unwrap();
-            save_tile_references(&mut writer, &tile_refs, &mut data).unwrap();
-            data.save(&mut writer).unwrap();
+            let _ = save_to_internal_format(&mut writer, &indexed);
         }
 
         let reader = crate::geodata::reader::GeodataReader::load(tmp_path.to_str().unwrap()).unwrap();
