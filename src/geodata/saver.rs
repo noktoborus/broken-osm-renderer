@@ -52,23 +52,30 @@ impl TileIdToReferences {
 }
 
 fn save_nodes(writer: &mut dyn Write, nodes: &[RawNode], data: &mut BufferedData) -> Result<()> {
+    let mut tags_counter: usize = 0;
+
     writer.write_u32::<LittleEndian>(to_u32_safe(nodes.len())?)?;
     for node in nodes {
         writer.write_u64::<LittleEndian>(node.global_id)?;
         writer.write_f64::<LittleEndian>(node.lat)?;
         writer.write_f64::<LittleEndian>(node.lon)?;
         save_tags(writer, &node.tags, data)?;
+        tags_counter += node.tags.len();
     }
+    println!("writed {} nodes with {} tags", nodes.len(), tags_counter);
     Ok(())
 }
 
 fn save_ways(writer: &mut dyn Write, ways: &[RawWay], data: &mut BufferedData) -> Result<()> {
+    let mut tags_counter = 0;
     writer.write_u32::<LittleEndian>(to_u32_safe(ways.len())?)?;
     for way in ways {
         writer.write_u64::<LittleEndian>(way.global_id)?;
         save_refs(writer, way.node_ids.iter(), data)?;
         save_tags(writer, &way.tags, data)?;
+        tags_counter += way.tags.len();
     }
+    println!("writed {} ways with {} tags", ways.len(), tags_counter);
     Ok(())
 }
 
@@ -77,16 +84,24 @@ fn save_polygons(writer: &mut dyn Write, polygons: &[Polygon], data: &mut Buffer
     for polygon in polygons {
         save_refs(writer, polygon.iter(), data)?;
     }
+    println!("writed {} polygons", polygons.len());
     Ok(())
 }
 
 fn save_multipolygons(writer: &mut dyn Write, multipolygons: &[Multipolygon], data: &mut BufferedData) -> Result<()> {
+    let mut tags_counter: usize = 0;
     writer.write_u32::<LittleEndian>(to_u32_safe(multipolygons.len())?)?;
     for multipolygon in multipolygons {
         writer.write_u64::<LittleEndian>(multipolygon.global_id)?;
         save_refs(writer, multipolygon.polygon_ids.iter(), data)?;
         save_tags(writer, &multipolygon.tags, data)?;
+        tags_counter += multipolygon.tags.len();
     }
+    println!(
+        "writed {} multipolygons with {} tags",
+        multipolygons.len(),
+        tags_counter
+    );
     Ok(())
 }
 
