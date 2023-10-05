@@ -7,7 +7,7 @@ use crate::draw::point_pairs::PointPairCollection;
 use crate::draw::tile_pixels::{RgbTriples, TilePixels};
 use crate::geodata::reader::{Node, OsmEntities, OsmEntity};
 use crate::mapcss::styler::{Style, StyledArea, Styler, TextPosition};
-use crate::tile::Tile;
+use crate::tile::tile::Tile;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;

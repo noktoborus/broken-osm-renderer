@@ -1,6 +1,6 @@
 use crate::draw::point::Point;
 use crate::geodata::reader::{Multipolygon, Node, Way};
-use crate::tile::{coords_to_xy_tile_relative, Tile};
+use crate::tile::tile::{coords_to_xy_tile_relative, Tile};
 use std::cmp::Ordering;
 use std::collections::binary_heap::BinaryHeap;
 

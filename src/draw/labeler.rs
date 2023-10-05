@@ -5,7 +5,7 @@ use crate::draw::labelable::Labelable;
 use crate::draw::tile_pixels::TilePixels;
 use crate::geodata::reader::OsmEntity;
 use crate::mapcss::styler::{Style, TextPosition};
-use crate::tile::Tile;
+use crate::tile::tile::Tile;
 
 #[derive(Default)]
 pub struct Labeler {

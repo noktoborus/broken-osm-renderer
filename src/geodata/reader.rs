@@ -1,5 +1,5 @@
 use crate::coords::Coords;
-use crate::tile;
+use crate::tile::tile;
 use anyhow::{Context, Result};
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use memmap2::{Mmap, MmapOptions};

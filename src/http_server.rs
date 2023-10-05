@@ -4,7 +4,7 @@ use crate::geodata::reader::GeodataReader;
 use crate::mapcss::parser::parse_file;
 use crate::mapcss::styler::{StyleType, Styler};
 use crate::perf_stats::PerfStats;
-use crate::tile::{Tile, MAX_ZOOM};
+use crate::tile::tile::{Tile, MAX_ZOOM};
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashSet;
 use std::io::prelude::*;

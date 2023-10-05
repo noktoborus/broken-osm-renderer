@@ -5,7 +5,7 @@ use crate::draw::tile_pixels::TilePixels;
 use crate::geodata::reader::OsmEntity;
 use crate::mapcss::color::Color;
 use crate::mapcss::styler::{TextPosition, TextStyle};
-use crate::tile::{Tile, TILE_SIZE};
+use crate::tile::tile::{Tile, TILE_SIZE};
 use stb_truetype::{FontInfo, Vertex, VertexType};
 
 pub struct TextPlacer {

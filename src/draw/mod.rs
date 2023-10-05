@@ -1,4 +1,4 @@
-const TILE_SIZE: usize = crate::tile::TILE_SIZE as usize;
+const TILE_SIZE: usize = crate::tile::tile::TILE_SIZE as usize;
 
 pub mod drawer;
 pub mod fill;

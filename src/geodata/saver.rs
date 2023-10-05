@@ -1,7 +1,7 @@
 use crate::geodata::importer::{Indexed, IndexedNode, IndexedPolygon, IndexedRelation, IndexedWay, ParsedNode};
 #[cfg(test)]
 use crate::geodata::importer::{OsmRef, Parsed};
-use crate::tile;
+use crate::tile::tile;
 use anyhow::{bail, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::{max, min};

@@ -1,6 +1,6 @@
 use crate::draw::point::Point;
 use crate::geodata::reader::{Multipolygon, Polygon, Way};
-use crate::tile::Tile;
+use crate::tile::tile::Tile;
 
 pub type PointPairIter<'a> = Box<dyn Iterator<Item = (Point, Point)> + 'a>;
 
