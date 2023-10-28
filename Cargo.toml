@@ -14,6 +14,7 @@ png = "*"
 quick-xml = "*"
 stb_truetype = "*"
 tini = "*"
+rusqlite = { version = "*", features = ["bundled"] }
 
 [dependencies.osmpbf]
 version = "*"

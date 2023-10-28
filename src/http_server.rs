@@ -4,6 +4,7 @@ use crate::geodata::reader::GeodataReader;
 use crate::mapcss::parser::parse_file;
 use crate::mapcss::styler::{StyleType, Styler};
 use crate::perf_stats::PerfStats;
+use crate::tile::mbtiles::MBTiles;
 use crate::tile::tile::{Tile, MAX_ZOOM};
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashSet;
@@ -25,6 +26,7 @@ enum HandlerMessage {
 struct HandlerState {
     current_scale: usize,
     current_pixels: Box<TilePixels>,
+    cache: MBTiles,
 }
 
 #[cfg_attr(feature = "cargo-clippy", allow(clippy::implicit_hasher))]
@@ -69,6 +71,7 @@ pub fn run_server(
             let mut handler_state = HandlerState {
                 current_scale: initial_scale,
                 current_pixels: Box::new(TilePixels::new(initial_scale)),
+                cache: MBTiles::new(),
             };
 
             while let Ok(msg) = receiver.recv() {
@@ -124,6 +127,48 @@ struct HttpServer<'a> {
 }
 
 impl<'a> HttpServer<'a> {
+    fn draw_tile(&self, tile: &RequestTile, state: &mut HandlerState) -> Result<Vec<u8>> {
+        let entities = {
+            let _m = crate::perf_stats::measure("Get tile entities");
+            self.reader
+                .get_entities_in_tile_with_neighbors(&tile.tile, &self.osm_ids)
+        };
+
+        if tile.scale != state.current_scale {
+            let _m = crate::perf_stats::measure("Re-scaling TilePixels");
+            state.current_scale = tile.scale;
+            state.current_pixels = Box::new(TilePixels::new(tile.scale));
+        }
+
+        let tile_png_bytes = self
+            .drawer
+            .draw_tile(
+                &entities,
+                &tile.tile,
+                &mut state.current_pixels,
+                state.current_scale,
+                &self.styler,
+            )
+            .unwrap();
+
+        return Ok(tile_png_bytes);
+    }
+
+    fn cached_tile(&self, tile: &RequestTile, state: &mut HandlerState) -> Result<Vec<u8>> {
+        match state.cache.get(tile.tile.zoom, tile.tile.x, tile.tile.y) {
+            Some(tile_bytes) => {println!("hit"); Ok(tile_bytes)},
+            None => {
+                let tile_png_bytes = self.draw_tile(tile, state)?;
+                let _m = crate::perf_stats::measure("Store tile to cache");
+
+                state
+                    .cache
+                    .set(tile.tile.zoom, tile.tile.x, tile.tile.y, &tile_png_bytes);
+                return Ok(tile_png_bytes);
+            }
+        }
+    }
+
     fn handle_connection(&self, path: &str, mut stream: TcpStream, state: &mut HandlerState) {
         match self.try_handle_connection(path, &mut stream, state) {
             Ok(_) => {}
@@ -147,28 +192,7 @@ impl<'a> HttpServer<'a> {
             crate::perf_stats::start_tile(tile.tile.zoom);
         }
 
-        let entities = {
-            let _m = crate::perf_stats::measure("Get tile entities");
-            self.reader
-                .get_entities_in_tile_with_neighbors(&tile.tile, &self.osm_ids)
-        };
-
-        if tile.scale != state.current_scale {
-            let _m = crate::perf_stats::measure("Re-scaling TilePixels");
-            state.current_scale = tile.scale;
-            state.current_pixels = Box::new(TilePixels::new(tile.scale));
-        }
-
-        let tile_png_bytes = self
-            .drawer
-            .draw_tile(
-                &entities,
-                &tile.tile,
-                &mut state.current_pixels,
-                state.current_scale,
-                &self.styler,
-            )
-            .unwrap();
+        let tile_png_bytes = self.cached_tile(&tile, state)?;
 
         if cfg!(feature = "perf-stats") {
             crate::perf_stats::finish_tile(&mut self.perf_stats.lock().unwrap());
