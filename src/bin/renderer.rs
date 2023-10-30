@@ -48,6 +48,7 @@ fn main() {
             fail();
         }
     };
+    let cache_file = get_value_from_config(&config, "cache", "file");
     let font_size_multiplier =
         config
             .get::<String>(style_section, "font-mul")
@@ -75,6 +76,7 @@ fn main() {
         &geodata_file,
         &stylesheet_file,
         &stylesheet_type,
+        &cache_file,
         font_size_multiplier,
         osm_ids,
     );
