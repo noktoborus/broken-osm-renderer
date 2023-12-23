@@ -22,7 +22,7 @@ pub struct TileRange {
 
 /// # Examples
 /// ```
-/// use renderer::tile::{coords_to_max_zoom_tile,Tile};
+/// use renderer::tile::tile::{coords_to_max_zoom_tile,Tile};
 /// assert_eq!(coords_to_max_zoom_tile(&(55.747764f64, 37.437745f64)), Tile { zoom: 18, x: 158333, y: 81957 });
 /// assert_eq!(coords_to_max_zoom_tile(&(40.1222f64, 20.6852f64)), Tile { zoom: 18, x: 146134, y: 99125 });
 /// assert_eq!(coords_to_max_zoom_tile(&(-35.306536f64, 149.126545f64)), Tile { zoom: 18, x: 239662, y: 158582 });
@@ -40,7 +40,7 @@ pub fn coords_to_max_zoom_tile<C: Coords>(coords: &C) -> Tile {
 /// Return the range of all smallest tiles that are covered by a given tile.
 /// # Examples
 /// ```
-/// use renderer::tile::{tile_to_max_zoom_tile_range,Tile,TileRange};
+/// use renderer::tile::tile::{tile_to_max_zoom_tile_range,Tile,TileRange};
 /// assert_eq!(tile_to_max_zoom_tile_range(&Tile { zoom: 0, x: 0, y: 0 }), TileRange {
 ///     min_x: 0,
 ///     max_x: 262143,
@@ -75,7 +75,7 @@ pub fn tile_to_max_zoom_tile_range(tile: &Tile) -> TileRange {
 /// Projects a given geopoint to Web Mercator coordinates for a given zoom level.
 /// # Examples
 /// ```
-/// use renderer::tile::coords_to_xy;
+/// use renderer::tile::tile::coords_to_xy;
 /// fn assert_floor_eq((x_actual, y_actual): (f64, f64), (x_expected, y_expected): (u32, u32)) {
 ///     assert_eq!(x_actual as u32, x_expected as u32);
 ///     assert_eq!(y_actual as u32, y_expected as u32);

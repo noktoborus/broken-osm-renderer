@@ -299,17 +299,25 @@ mod tests {
         let mut parsed = Parsed::new();
 
         for idx in 0..tile_ids.len() {
-            parsed.add_node(ParsedNode::new(idx as OsmRef, 1.0, 1.0), None);
+            let mut node = ParsedNode::new(idx as OsmRef, 1.0, 1.0);
+
+            /* nodes without tags are dropped */
+            node.tags.insert("one".to_string(), "tag".to_string());
+            parsed.add_node(node, None);
         }
         let mut indexed = Indexed::new();
         indexed.build_from(&parsed);
+        indexed.print_stats();
 
         let mut tile_refs = TileIdToReferences::default();
         for (idx, &(x, y)) in tile_ids.iter().enumerate() {
-            tile_refs.refs.entry((x, y)).or_insert(TileReferences {
-                local_node_ids: [idx].iter().cloned().collect(),
-                local_way_ids: BTreeSet::default(),
-                local_multipolygon_ids: BTreeSet::default(),
+            tile_refs.refs.entry((x, y)).or_insert({
+                println!("idx: {}, x: {} y: {}", idx, x, y);
+                TileReferences {
+                    local_node_ids: [idx].iter().cloned().collect(),
+                    local_way_ids: BTreeSet::default(),
+                    local_multipolygon_ids: BTreeSet::default(),
+                }
             });
         }
 
@@ -319,11 +327,18 @@ mod tests {
         {
             let tmp_file = File::create(&tmp_path).unwrap();
             let mut writer = BufWriter::new(tmp_file);
-            let _ = save_to_internal_format(&mut writer, &indexed);
+            let mut data = BufferedData::default();
+
+            save_nodes(&mut writer, &indexed.nodes, &mut data).unwrap();
+            save_ways(&mut writer, &[], &mut data).unwrap();
+            save_polygons(&mut writer, &[], &mut data).unwrap();
+            save_relations(&mut writer, &[], &mut data).unwrap();
+            save_tile_references(&mut writer, &tile_refs, &mut data).unwrap();
+            data.save(&mut writer).unwrap();
         }
 
         let reader = crate::geodata::reader::GeodataReader::load(tmp_path.to_str().unwrap()).unwrap();
-        let tile = crate::tile::Tile { zoom: 15, x: 0, y: 1 };
+        let tile = crate::tile::tile::Tile { zoom: 15, x: 0, y: 1 };
         let mut local_ids = crate::geodata::reader::OsmEntityIds::default();
         reader.get_entities_in_tile(&tile, &mut local_ids);
         assert_eq!(good_node_ids, local_ids.nodes);

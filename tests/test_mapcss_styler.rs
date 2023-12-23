@@ -5,7 +5,7 @@ use renderer::geodata::reader::OsmEntity;
 use renderer::mapcss::color::{from_color_name, Color};
 use renderer::mapcss::parser::parse_file;
 use renderer::mapcss::styler::{LineCap, Style, StyleType, Styler};
-use renderer::tile::Tile;
+use renderer::tile::tile::Tile;
 use std::collections::HashMap;
 use std::path::Path;
 
