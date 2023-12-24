@@ -110,7 +110,7 @@ impl<'a> GeodataReader<'a> {
     }
 
     pub(super) fn get_entities_in_tile(&'a self, t: &tile::Tile, entity_ids: &mut OsmEntityIds) {
-        let mut bounds = tile::tile_to_max_zoom_tile_range(t);
+        let mut bounds = tile::tile_to_max_zoom_tile_range_safe(t);
         let mut start_from_index = 0;
 
         let tile_count = self.tile_count();

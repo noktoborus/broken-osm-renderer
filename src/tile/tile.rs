@@ -104,3 +104,41 @@ pub fn coords_to_xy_tile_relative<C: Coords>(coords: &C, tile: &Tile) -> (f64, f
     let (x, y) = coords_to_xy(coords, tile.zoom);
     (x - f64::from(tile.x * TILE_SIZE), y - f64::from(tile.y * TILE_SIZE))
 }
+
+struct LatLon {
+    lat: f64,
+    lon: f64,
+}
+
+impl Coords for LatLon {
+    fn lat(&self) -> f64 {
+        self.lat
+    }
+
+    fn lon(&self) -> f64 {
+        self.lon
+    }
+}
+
+/// Get lat, lon for top left corner of tile
+fn tile_to_coords(tile: &Tile) -> LatLon {
+    let n: f64 = (1 << tile.zoom).into();
+    let xtile: f64 = tile.x.into();
+    let ytile: f64 = tile.y.into();
+
+    let lon = xtile / n * 360.0 - 180.0;
+    let lat = (PI * (1.0 - 2.0 * ytile / n)).sinh().atan().to_degrees();
+
+    LatLon { lon, lat }
+}
+
+/// Get TileRange with respect to maxzoom of tiles BD
+pub fn tile_to_max_zoom_tile_range_safe(tile: &Tile) -> TileRange {
+    if tile.zoom > MAX_ZOOM {
+        let latlon = tile_to_coords(tile);
+        let parenttile = coords_to_max_zoom_tile(&latlon);
+        tile_to_max_zoom_tile_range(&parenttile)
+    } else {
+        tile_to_max_zoom_tile_range(tile)
+    }
+}
