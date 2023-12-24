@@ -24,6 +24,12 @@ pub struct OsmEntities<'a> {
     pub multipolygons: Vec<Multipolygon<'a>>,
 }
 
+impl OsmEntities<'_> {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.ways.is_empty() && self.multipolygons.is_empty()
+    }
+}
+
 #[derive(Default)]
 pub(super) struct OsmEntityIds {
     pub(super) nodes: Vec<u32>,
