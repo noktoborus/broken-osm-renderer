@@ -852,21 +852,35 @@ impl Parsed {
             NodeDesc::new(node_osm_ref, node.lat, node.lon)
         };
 
-        relation
-            .way_refs
-            .iter()
-            .map(|way_ref| (self.ways.get(&way_ref.id), way_ref.is_inner))
-            .filter(|(option_way, _)| option_way.is_some())
-            .map(|(option_way, is_inner)| (option_way.unwrap(), is_inner))
-            .flat_map(|(way, is_inner)| {
-                (1..way.nodes_ref.len()).map(move |idx| {
-                    NodeDescPair::new(
-                        create_node_desc(way.nodes_ref[idx - 1]),
-                        create_node_desc(way.nodes_ref[idx]),
-                        is_inner,
-                    )
-                })
-            })
-            .collect()
+        let mut pairs: Vec<NodeDescPair> = Vec::new();
+        let mut not_found: Vec<OsmRef> = Vec::new();
+
+        for way_ref in relation.way_refs.iter() {
+            match self.ways.get(&way_ref.id) {
+                Some(way) => {
+                    for idx in 1..way.nodes_ref.len() {
+                        pairs.push(NodeDescPair::new(
+                            create_node_desc(way.nodes_ref[idx - 1]),
+                            create_node_desc(way.nodes_ref[idx]),
+                            way_ref.is_inner,
+                        ))
+                    }
+                }
+                None => {
+                    not_found.push(way_ref.id);
+                }
+            }
+        }
+
+        if !not_found.is_empty() {
+            println!(
+                "relation #{}: {}/{} ways not found",
+                relation.id,
+                not_found.len(),
+                relation.way_refs.len()
+            );
+        }
+
+        pairs
     }
 }
