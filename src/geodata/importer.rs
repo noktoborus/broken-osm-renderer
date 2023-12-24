@@ -255,9 +255,8 @@ fn process_relation_subelement<R: BufRead>(
                 let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
 
                 relation.way_refs.push(ParsedRelationWay::new(osm_ref, is_inner));
-            },
-            "node" => {
             }
+            "node" => {}
             &_ => {}
         }
     }
