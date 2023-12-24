@@ -246,11 +246,20 @@ fn process_relation_subelement<R: BufRead>(
     if try_add_tag(parser, sub_name, sub_attrs, &mut relation.tags)? {
         return Ok(());
     }
-    if sub_name == b"member" && get_required_attr(parser, sub_name, sub_attrs, b"type")? == "way" {
-        let osm_ref = parse_required_attr(parser, sub_name, sub_attrs, b"ref")?;
-        let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
+    if sub_name == b"member" {
+        let attr_type = get_required_attr(parser, sub_name, sub_attrs, b"type")?;
 
-        relation.way_refs.push(ParsedRelationWay::new(osm_ref, is_inner));
+        match attr_type.as_ref() {
+            "way" => {
+                let osm_ref = parse_required_attr(parser, sub_name, sub_attrs, b"ref")?;
+                let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
+
+                relation.way_refs.push(ParsedRelationWay::new(osm_ref, is_inner));
+            },
+            "node" => {
+            }
+            &_ => {}
+        }
     }
     Ok(())
 }
