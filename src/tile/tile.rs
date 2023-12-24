@@ -2,7 +2,7 @@ use crate::coords::Coords;
 
 use std::f64::consts::PI;
 
-pub const MAX_ZOOM: u8 = 18;
+pub const MAX_ZOOM: u8 = 16;
 pub const TILE_SIZE: u32 = 256;
 
 #[derive(Eq, PartialEq, Debug)]
