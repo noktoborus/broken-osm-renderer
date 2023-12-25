@@ -73,11 +73,7 @@ impl<'a> GeodataReader<'a> {
         let deltas = [-1, 0, 1];
         for dx in &deltas {
             for dy in &deltas {
-                let adjacent_tile = tile::Tile {
-                    x: (t.x as i32 + dx) as u32,
-                    y: (t.y as i32 + dy) as u32,
-                    zoom: t.zoom,
-                };
+                let adjacent_tile = tile::tile_adjust(t, *dx, *dy);
                 self.get_entities_in_tile(&adjacent_tile, &mut entity_ids);
             }
         }

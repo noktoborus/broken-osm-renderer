@@ -142,3 +142,27 @@ pub fn tile_to_max_zoom_tile_range_safe(tile: &Tile) -> TileRange {
         tile_to_max_zoom_tile_range(tile)
     }
 }
+
+/// Calculate tile's coordinates from giving tile and offsets,
+/// respects number of tiles for current zoom, allows overflows
+/// and negative numbers
+pub fn tile_adjust(tile: &Tile, delta_x: i32, delta_y: i32) -> Tile {
+    let upper_bound: u64 = 1 << tile.zoom;
+
+    let val_x: i64 = (tile.x as i64) + (delta_x as i64);
+    let val_y: i64 = (tile.y as i64) + (delta_y as i64);
+
+    Tile {
+        zoom: tile.zoom,
+        x: (val_x as u64 % upper_bound) as u32,
+        y: (val_y as u64 % upper_bound) as u32,
+    }
+}
+
+#[test]
+fn test_tile_adjust() {
+    let tile = Tile { x: 1, y: 4, zoom: 3 };
+
+    assert_eq!(tile_adjust(&tile, -8, 8), Tile { x: 1, y: 4, zoom: 3 });
+    assert_eq!(tile_adjust(&tile, -15, 15), Tile { x: 2, y: 3, zoom: 3 });
+}
