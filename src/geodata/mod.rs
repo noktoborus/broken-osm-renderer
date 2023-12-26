@@ -1,4 +1,4 @@
-mod find_polygons;
+mod collect_polygons;
 pub mod importer;
 pub mod reader;
 mod saver;

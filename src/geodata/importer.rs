@@ -1,5 +1,5 @@
 use crate::coords;
-use crate::geodata::find_polygons::{find_polygons_in_multipolygon, NodeDesc, NodeDescPair};
+use crate::geodata::collect_polygons;
 use crate::geodata::saver::save_to_internal_format;
 use crate::mapcss::filterer::Filterer;
 use crate::mapcss::parser::ObjectType;
@@ -741,20 +741,38 @@ impl Parsed {
     }
 
     pub(self) fn add_multipolygon(&mut self, relation: ParsedRelation) {
-        let segments = self.split_relation_to_segments(&relation);
+        let (outer_ways, inner_ways) = self.extract_ways(&relation);
 
-        if let Some(polygons) = find_polygons_in_multipolygon(relation.id, &segments) {
-            let mut poly_relation = relation.clone();
+        if !outer_ways.is_empty() {
+            let oxpolygons = collect_polygons::ways_to_polygons(outer_ways);
 
-            for poly in polygons {
-                let polygon_id = poly.get_id();
+            // Without outer polygons, there is no inner
+            if !oxpolygons.is_empty() {
+                let mut poly_relation = relation.clone();
 
-                poly_relation.polygons.push(polygon_id);
-                self.polygons.insert(polygon_id, poly);
+                if !inner_ways.is_empty() {
+                    for poly in collect_polygons::ways_to_polygons(inner_ways) {
+                        let ppoly = ParsedPolygon { nodes: poly.nodes() };
+                        let ppoly_id = ppoly.get_id();
+
+                        poly_relation.polygons.push(ppoly_id);
+                        self.polygons.insert(ppoly_id, ppoly);
+                    }
+                }
+
+                for poly in oxpolygons {
+                    let ppoly = ParsedPolygon { nodes: poly.nodes() };
+                    let ppoly_id = ppoly.get_id();
+
+                    poly_relation.polygons.push(ppoly_id);
+                    self.polygons.insert(ppoly_id, ppoly);
+                }
+
+                self.count_tags += poly_relation.tags.len();
+                self.relations.insert(relation.id, poly_relation);
+            } else {
+                self.count_nopolygons_relations += 1;
             }
-
-            self.count_tags += poly_relation.tags.len();
-            self.relations.insert(relation.id, poly_relation);
         } else {
             self.count_nopolygons_relations += 1;
         }
@@ -841,28 +859,34 @@ impl Parsed {
         println!("Deduplicated node pairs in ways: {}", self.count_deduplicated_ways);
     }
 
-    pub(super) fn split_relation_to_segments(&self, relation: &ParsedRelation) -> Vec<NodeDescPair> {
-        let create_node_desc = |node_osm_ref: OsmRef| {
-            let node = self
-                .nodes
-                .get(&node_osm_ref)
-                .unwrap_or_else(|| panic!("Input file not completed: not found node {}", node_osm_ref));
-
-            NodeDesc::new(node_osm_ref, node.lat, node.lon)
-        };
-
-        let mut pairs: Vec<NodeDescPair> = Vec::new();
+    pub(super) fn extract_ways(
+        &self,
+        relation: &ParsedRelation,
+    ) -> (Vec<collect_polygons::Way>, Vec<collect_polygons::Way>) {
         let mut not_found: Vec<OsmRef> = Vec::new();
+        let mut outer_ways = Vec::new();
+        let mut inner_ways = Vec::new();
 
         for way_ref in relation.way_refs.iter() {
             match self.ways.get(&way_ref.id) {
                 Some(way) => {
-                    for idx in 1..way.nodes_ref.len() {
-                        pairs.push(NodeDescPair::new(
-                            create_node_desc(way.nodes_ref[idx - 1]),
-                            create_node_desc(way.nodes_ref[idx]),
-                            way_ref.is_inner,
-                        ))
+                    let first_node = self.nodes.get(way.nodes_ref.first().unwrap()).unwrap();
+                    let first_node_pos = collect_polygons::NodePos::new(first_node.lat, first_node.lon);
+                    let last_node = self.nodes.get(way.nodes_ref.last().unwrap()).unwrap();
+                    let last_node_pos = collect_polygons::NodePos::new(last_node.lat, last_node.lon);
+
+                    if !way_ref.is_inner {
+                        outer_ways.push(collect_polygons::Way::new(
+                            way.nodes_ref.clone(),
+                            first_node_pos,
+                            last_node_pos,
+                        ));
+                    } else {
+                        inner_ways.push(collect_polygons::Way::new(
+                            way.nodes_ref.clone(),
+                            first_node_pos,
+                            last_node_pos,
+                        ));
                     }
                 }
                 None => {
@@ -880,6 +904,6 @@ impl Parsed {
             );
         }
 
-        pairs
+        (outer_ways, inner_ways)
     }
 }
