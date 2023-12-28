@@ -77,26 +77,25 @@ impl Drawer {
 
         let float_scale = scale as f64;
 
-        let draw_areas_with_type = |pixels: &mut TilePixels, draw_type, use_multipolygons| {
+        let draw_areas_with_type = |pixels: &mut TilePixels, draw_type| {
             self.draw_areas(
                 pixels,
                 &styled_areas,
                 tile,
                 float_scale,
                 draw_type,
-                use_multipolygons,
                 styler.use_caps_for_dashes,
             );
         };
 
         {
             let _m = crate::perf_stats::measure("Fill areas");
-            draw_areas_with_type(pixels, &DrawType::Fill, true);
+            draw_areas_with_type(pixels, &DrawType::Fill);
         }
         {
             let _m = crate::perf_stats::measure("Draw areas");
-            draw_areas_with_type(pixels, &DrawType::Casing, false);
-            draw_areas_with_type(pixels, &DrawType::Stroke, false);
+            draw_areas_with_type(pixels, &DrawType::Casing);
+            draw_areas_with_type(pixels, &DrawType::Stroke);
         }
 
         {
@@ -137,7 +136,6 @@ impl Drawer {
         tile: &Tile,
         scale: f64,
         draw_type: &DrawType,
-        use_multipolygons: bool,
         use_caps_for_dashes: bool,
     ) {
         for (area, style) in areas {
@@ -145,10 +143,9 @@ impl Drawer {
                 StyledArea::Way(way) => {
                     self.draw_one_area(pixels, tile, scale, *way, style, draw_type, use_caps_for_dashes);
                 }
-                StyledArea::Multipolygon(rel) if use_multipolygons => {
+                StyledArea::Multipolygon(rel) => {
                     self.draw_one_area(pixels, tile, scale, *rel, style, draw_type, use_caps_for_dashes);
                 }
-                _ => {}
             }
         }
     }
