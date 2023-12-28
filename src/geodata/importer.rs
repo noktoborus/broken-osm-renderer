@@ -231,8 +231,7 @@ fn process_way_subelement<R: BufRead>(
         return Ok(());
     }
     if sub_name == b"nd" {
-        way.nodes_ref
-            .push(parse_required_attr(parser, sub_name, sub_attrs, b"ref")?);
+        way.nodes_ref.push(get_ref(parser, sub_name, sub_attrs)?);
     }
     Ok(())
 }
@@ -251,7 +250,7 @@ fn process_relation_subelement<R: BufRead>(
 
         match attr_type.as_ref() {
             "way" => {
-                let osm_ref = parse_required_attr(parser, sub_name, sub_attrs, b"ref")?;
+                let osm_ref = get_ref(parser, sub_name, sub_attrs)?;
                 let is_inner = get_required_attr(parser, sub_name, sub_attrs, b"role")? == "inner";
 
                 relation.way_refs.push(ParsedRelationWay::new(osm_ref, is_inner));
@@ -324,7 +323,17 @@ fn try_add_tag<R: BufRead>(
 }
 
 fn get_id<R: BufRead>(parser: &mut Reader<R>, elem_name: &[u8], attrs: &mut Attributes) -> Result<u64> {
-    parse_required_attr(parser, elem_name, attrs, b"id")
+    match parse_required_attr(parser, elem_name, attrs, b"id") as Result<i64> {
+        Ok(id) => Ok(id as u64),
+        Err(err) => Err(err),
+    }
+}
+
+fn get_ref<R: BufRead>(parser: &mut Reader<R>, elem_name: &[u8], attrs: &mut Attributes) -> Result<u64> {
+    match parse_required_attr(parser, elem_name, attrs, b"ref") as Result<i64> {
+        Ok(id) => Ok(id as u64),
+        Err(err) => Err(err),
+    }
 }
 
 pub(super) type OsmRef = u64;
