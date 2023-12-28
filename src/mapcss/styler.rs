@@ -112,56 +112,62 @@ impl Styler {
         }
     }
 
+    pub fn style_entity<'e, 'wp, A>(&self, entity: &'wp A, zoom: u8) -> Vec<(&'wp A, Arc<Style>)>
+    where
+        A: CacheableEntity + StyleableEntity + OsmEntity<'e>,
+    {
+        let mut styled_areas: Vec<(&'wp A, Arc<Style>)> = Vec::new();
+
+        let mut add_styles = |styles: &Vec<Arc<Style>>| {
+            for s in styles.iter() {
+                styled_areas.push((entity, Arc::clone(s)));
+            }
+        };
+
+        {
+            let read_cache = self.style_cache.read().unwrap();
+            if let Some(styles) = read_cache.get(entity, zoom) {
+                add_styles(&styles);
+                return styled_areas;
+            }
+        }
+
+        let default_z_index = entity.default_z_index();
+
+        let all_property_maps = self.get_property_maps(entity, zoom);
+
+        let base_layer = all_property_maps
+            .iter()
+            .find(|kvp| *kvp.0 == BASE_LAYER_NAME)
+            .map(|kvp| kvp.1);
+
+        let mut styles = Vec::new();
+        for (layer, prop_map) in &all_property_maps {
+            if *layer != "*" {
+                styles.push(Arc::new(property_map_to_style(
+                    prop_map,
+                    base_layer,
+                    default_z_index,
+                    self.casing_width_multiplier,
+                    &self.font_size_multiplier,
+                    entity,
+                )))
+            }
+        }
+
+        add_styles(&styles);
+        self.style_cache.write().unwrap().insert(entity, zoom, styles);
+        styled_areas
+    }
+
     pub fn style_entities<'e, 'wp, I, A>(&self, areas: I, zoom: u8, for_labels: bool) -> Vec<(&'wp A, Arc<Style>)>
     where
         A: CacheableEntity + StyleableEntity + OsmEntity<'e>,
         I: Iterator<Item = &'wp A>,
     {
-        let mut styled_areas = Vec::new();
-        for area in areas {
-            let mut add_styles = |styles: &Vec<Arc<Style>>| {
-                for s in styles.iter() {
-                    styled_areas.push((area, Arc::clone(s)));
-                }
-            };
-
-            {
-                let read_cache = self.style_cache.read().unwrap();
-                if let Some(styles) = read_cache.get(area, zoom) {
-                    add_styles(&styles);
-                    continue;
-                }
-            }
-
-            let default_z_index = area.default_z_index();
-
-            let all_property_maps = self.style_area(area, zoom);
-
-            let base_layer = all_property_maps
-                .iter()
-                .find(|kvp| *kvp.0 == BASE_LAYER_NAME)
-                .map(|kvp| kvp.1);
-
-            let mut styles = Vec::new();
-            for (layer, prop_map) in &all_property_maps {
-                if *layer != "*" {
-                    styles.push(Arc::new(property_map_to_style(
-                        prop_map,
-                        base_layer,
-                        default_z_index,
-                        self.casing_width_multiplier,
-                        &self.font_size_multiplier,
-                        area,
-                    )))
-                }
-            }
-
-            add_styles(&styles);
-            self.style_cache.write().unwrap().insert(area, zoom, styles)
-        }
+        let mut styled_areas: Vec<_> = areas.flat_map(|entity| self.style_entity(entity, zoom)).collect();
 
         styled_areas.sort_by(|a, b| compare_styled_entities(a, b, for_labels));
-
         styled_areas
     }
 
@@ -202,7 +208,7 @@ impl Styler {
         result
     }
 
-    fn style_area<'r, 'e, A>(&'r self, area: &A, zoom: u8) -> LayerToPropertyMap<'r>
+    fn get_property_maps<'r, 'e, A>(&'r self, area: &A, zoom: u8) -> LayerToPropertyMap<'r>
     where
         A: StyleableEntity + OsmEntity<'e>,
     {
