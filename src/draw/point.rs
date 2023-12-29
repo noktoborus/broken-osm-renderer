@@ -1,7 +1,7 @@
 use crate::geodata::reader::Node;
 use crate::tile::tile as t;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Copy)]
 pub struct Point {
     pub x: i32,
     pub y: i32,

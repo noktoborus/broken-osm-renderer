@@ -2,10 +2,8 @@ use crate::draw::font::rasterizer::Rasterizer;
 use crate::draw::labelable::Labelable;
 use crate::draw::point::Point;
 use crate::draw::tile_pixels::TilePixels;
-use crate::geodata::reader::OsmEntity;
-use crate::mapcss::color::Color;
 use crate::mapcss::styler::{TextPosition, TextStyle};
-use crate::tile::tile::{Tile, TILE_SIZE};
+use crate::tile::tile::TILE_SIZE;
 use stb_truetype::{FontInfo, Vertex, VertexType};
 
 pub struct TextPlacer {
@@ -25,40 +23,24 @@ impl TextPlacer {
         &self,
         on: &E,
         text_style: &TextStyle,
-        tile: &Tile,
         global_scale: f64,
         y_offset: usize,
-        default_text_position: TextPosition,
         pixels: &mut TilePixels,
     ) -> bool
     where
-        E: Labelable + OsmEntity<'e>,
+        E: Labelable,
     {
-        let font_size = match text_style.font_size {
-            Some(font_size) => font_size * global_scale,
-            _ => return true,
-        };
-
-        let text_to_draw = match on.tags().get_by_key(&text_style.text) {
-            Some(text_to_draw) => text_to_draw,
-            _ => return true,
-        };
-
-        let text_pos = text_style.text_position.as_ref().unwrap_or(&default_text_position);
-
+        let font_size = text_style.font_size * global_scale;
+        let text_pos = &text_style.text_position;
         let scale = f64::from(self.font.scale_for_pixel_height(font_size as f32));
-        let glyphs = self.text_to_glyphs(text_to_draw, scale);
+        let glyphs = self.text_to_glyphs(&text_style.text, scale);
 
-        let text_color = match text_style.text_color {
-            Some(ref color) => color,
-            _ => &Color { r: 0, g: 0, b: 0 },
-        };
-        let mut rasterizer = Rasterizer::new(text_color);
+        let mut rasterizer = Rasterizer::new(&text_style.text_color);
         let vm = self.get_v_metrics(scale);
 
         match text_pos {
             TextPosition::Line => {
-                if let Some(mut points) = on.get_waypoints(tile, global_scale) {
+                if let Some(mut points) = on.get_waypoints(global_scale) {
                     if points.len() < 2 {
                         return true;
                     }
@@ -110,7 +92,7 @@ impl TextPlacer {
                 }
             }
             TextPosition::Center => {
-                if let Some((center_x, center_y)) = on.get_label_position(tile, global_scale) {
+                if let Some((center_x, center_y)) = on.get_label_position(global_scale) {
                     let mut glyph_rows = Vec::new();
                     let mut current_row = Vec::new();
                     let mut current_row_width = 0.0;

@@ -2,7 +2,8 @@ use crate::draw::drawer::Drawer;
 use crate::draw::tile_pixels::TilePixels;
 use crate::geodata::reader::GeodataReader;
 use crate::mapcss::parser::parse_file;
-use crate::mapcss::styler::{StyleType, Styler};
+use crate::mapcss::styler::StyledEntities;
+use crate::mapcss::styler::Styler;
 use crate::perf_stats::PerfStats;
 use crate::tile::mbtiles::MBTiles;
 use crate::tile::tile::{Tile, MAX_ZOOM};
@@ -35,7 +36,6 @@ pub fn run_server(
     address: &str,
     geodata_file: &str,
     stylesheet_file: &str,
-    stylesheet_type: &StyleType,
     cache_file: &str,
     font_size_multiplier: Option<f64>,
     osm_ids: Option<HashSet<u64>>,
@@ -44,7 +44,7 @@ pub fn run_server(
     let rules = parse_file(&base_path, &file_name).context("Failed to parse the stylesheet file")?;
 
     let server = Arc::new(HttpServer {
-        styler: Styler::new(rules, stylesheet_type, font_size_multiplier),
+        styler: Styler::new(rules, font_size_multiplier),
         reader: GeodataReader::load(geodata_file).context("Failed to load the geodata file")?,
         drawer: Drawer::new(&base_path),
         osm_ids,
@@ -145,13 +145,18 @@ impl<'a> HttpServer<'a> {
             state.current_pixels = Box::new(TilePixels::new(tile.scale));
         }
 
+        let styled_entities = {
+            let _m = crate::perf_stats::measure("Style Entities");
+            StyledEntities::new(&self.styler, &entities, tile.tile.zoom)
+        };
+
         let tile_png_bytes = self
             .drawer
-            .draw_tile(
-                &entities,
-                &tile.tile,
+            .draw(
+                &styled_entities,
                 &mut state.current_pixels,
-                state.current_scale,
+                &tile.tile,
+                state.current_scale as f64,
                 &self.styler,
             )
             .unwrap();

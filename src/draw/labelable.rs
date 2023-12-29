@@ -1,5 +1,6 @@
 use crate::draw::point::Point;
-use crate::geodata::reader::{Multipolygon, Node, Way};
+use crate::geodata::reader::Node;
+use crate::mapcss::styler::OsmEntityType;
 use crate::tile::tile::{coords_to_xy_tile_relative, Tile};
 use std::cmp::Ordering;
 use std::collections::binary_heap::BinaryHeap;
@@ -7,54 +8,67 @@ use std::collections::binary_heap::BinaryHeap;
 type PointF = (f64, f64);
 type LabelPosition = Option<PointF>;
 
+pub struct TiledEntity<'a, 'wp> {
+    pub(crate) entity: &'a OsmEntityType<'a, 'wp>,
+    pub(crate) tile: Tile,
+}
+
+pub trait TiledEntitySource<'c, 'e> {
+    fn get_tiled(&self, tile: &Tile) -> TiledEntity;
+}
+
+impl<'c, 'e> TiledEntitySource<'c, 'e> for OsmEntityType<'c, 'e> {
+    fn get_tiled(&self, tile: &Tile) -> TiledEntity {
+        TiledEntity {
+            entity: self,
+            tile: *tile,
+        }
+    }
+}
+
 pub trait Labelable {
-    fn get_label_position(&self, tile: &Tile, scale: f64) -> LabelPosition;
-    fn get_waypoints(&self, tile: &Tile, scale: f64) -> Option<Vec<Point>>;
+    fn get_label_position(&self, scale: f64) -> LabelPosition;
+    fn get_waypoints(&self, scale: f64) -> Option<Vec<Point>>;
 }
 
-impl<'n> Labelable for Node<'n> {
-    fn get_label_position(&self, tile: &Tile, scale: f64) -> LabelPosition {
-        let label_position = Point::from_node(self, tile, scale);
-        Some((f64::from(label_position.x), f64::from(label_position.y)))
+impl<'a, 'wp> Labelable for TiledEntity<'a, 'wp> {
+    fn get_label_position(&self, scale: f64) -> LabelPosition {
+        match self.entity {
+            OsmEntityType::Node(node) => {
+                let label_position = Point::from_node(node, &self.tile, scale);
+                Some((f64::from(label_position.x), f64::from(label_position.y)))
+            }
+            OsmEntityType::Way(way) => {
+                let polygon = nodes_to_points((0..way.node_count()).map(|idx| way.get_node(idx)), &self.tile, scale);
+                get_label_position(vec![polygon], scale)
+            }
+            OsmEntityType::Multipolygon(rel) => {
+                let polygons = (0..rel.polygon_count())
+                    .map(|poly_idx| {
+                        let poly = rel.get_polygon(poly_idx);
+                        nodes_to_points(
+                            (0..poly.node_count()).map(|node_idx| poly.get_node(node_idx)),
+                            &self.tile,
+                            scale,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                get_label_position(polygons, scale)
+            }
+        }
     }
 
-    fn get_waypoints(&self, _: &Tile, _: f64) -> Option<Vec<Point>> {
-        None
-    }
-}
-
-impl<'w> Labelable for Way<'w> {
-    fn get_label_position(&self, tile: &Tile, scale: f64) -> LabelPosition {
-        let polygon = nodes_to_points((0..self.node_count()).map(|idx| self.get_node(idx)), tile, scale);
-        get_label_position(vec![polygon], scale)
-    }
-
-    fn get_waypoints(&self, tile: &Tile, scale: f64) -> Option<Vec<Point>> {
-        Some(
-            (0..self.node_count())
-                .map(|idx| Point::from_node(&self.get_node(idx), tile, scale))
-                .collect(),
-        )
-    }
-}
-
-impl<'r> Labelable for Multipolygon<'r> {
-    fn get_label_position(&self, tile: &Tile, scale: f64) -> LabelPosition {
-        let polygons = (0..self.polygon_count())
-            .map(|poly_idx| {
-                let poly = self.get_polygon(poly_idx);
-                nodes_to_points(
-                    (0..poly.node_count()).map(|node_idx| poly.get_node(node_idx)),
-                    tile,
-                    scale,
-                )
-            })
-            .collect::<Vec<_>>();
-        get_label_position(polygons, scale)
-    }
-
-    fn get_waypoints(&self, _: &Tile, _: f64) -> Option<Vec<Point>> {
-        None
+    fn get_waypoints(&self, scale: f64) -> Option<Vec<Point>> {
+        match self.entity {
+            OsmEntityType::Node(_) => None,
+            OsmEntityType::Way(way) => Some(
+                (0..way.node_count())
+                    .map(|idx| Point::from_node(&way.get_node(idx), &self.tile, scale))
+                    .collect(),
+            ),
+            OsmEntityType::Multipolygon(_) => None,
+        }
     }
 }
 

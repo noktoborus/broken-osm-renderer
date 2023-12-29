@@ -1,5 +1,4 @@
 use renderer::http_server::run_server;
-use renderer::mapcss::styler::StyleType;
 use std::env;
 use tini::Ini;
 
@@ -40,14 +39,6 @@ fn main() {
 
     let style_section = "style";
     let stylesheet_file = get_value_from_config(&config, style_section, "file");
-    let stylesheet_type = match get_value_from_config(&config, style_section, "type").as_str() {
-        "josm" => StyleType::Josm,
-        "mapsme" => StyleType::MapsMe,
-        unknown_style => {
-            eprintln!("Unknown stylesheet type: {}", unknown_style);
-            fail();
-        }
-    };
     let cache_file = get_value_from_config(&config, "cache", "file");
     let font_size_multiplier =
         config
@@ -75,7 +66,6 @@ fn main() {
         &server_address,
         &geodata_file,
         &stylesheet_file,
-        &stylesheet_type,
         &cache_file,
         font_size_multiplier,
         osm_ids,

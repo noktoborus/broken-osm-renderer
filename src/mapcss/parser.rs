@@ -19,6 +19,8 @@ pub enum ObjectType {
     Area,
 }
 
+pub type RuleId = usize;
+
 impl fmt::Display for ObjectType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let object_type = match *self {
@@ -157,7 +159,14 @@ impl fmt::Display for Property {
 }
 
 #[derive(Debug)]
+pub struct ParentSelector {
+    pub object_type: ObjectType,
+    pub tests: Vec<Test>,
+}
+
+#[derive(Debug)]
 pub struct Selector {
+    pub parent_selector: Option<ParentSelector>,
     pub object_type: ObjectType,
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
@@ -197,6 +206,7 @@ impl fmt::Display for Selector {
 
 #[derive(Debug)]
 pub struct Rule {
+    pub rule_id: RuleId,
     pub selectors: Vec<Selector>,
     pub properties: Vec<Property>,
 }
@@ -205,7 +215,7 @@ impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} {{\n{}\n}}",
+            "{} {{\n{}\n}} ## id: {}",
             self.selectors
                 .iter()
                 .map(fmt_item::<Selector>)
@@ -215,7 +225,8 @@ impl fmt::Display for Rule {
                 .iter()
                 .map(fmt_item::<Property>)
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n"),
+            self.rule_id,
         )
     }
 }
@@ -223,6 +234,7 @@ impl fmt::Display for Rule {
 pub fn parse_file(base_path: &Path, file_name: &str) -> Result<Vec<Rule>> {
     let content = read_stylesheet(base_path, file_name)?;
     let mut parser = Parser {
+        id_increment: 0,
         tokenizer: Tokenizer::new(&content),
         base_path: base_path.to_owned(),
         file_name: file_name.to_string(),
@@ -234,6 +246,7 @@ pub fn parse_file(base_path: &Path, file_name: &str) -> Result<Vec<Rule>> {
 type ColorDefs = HashMap<String, Color>;
 
 struct Parser<'a> {
+    id_increment: RuleId,
     tokenizer: Tokenizer<'a>,
     base_path: PathBuf,
     file_name: String,
@@ -252,6 +265,7 @@ impl<'a> Parser<'a> {
                         Token::Import(imported_file) => {
                             self.expect_simple_token(&Token::SemiColon)?;
                             let (rules, color_defs) = self.import_file(imported_file)?;
+                            self.id_increment += rules.len();
                             result.extend(rules);
                             self.color_defs.extend(color_defs);
                         }
@@ -267,6 +281,7 @@ impl<'a> Parser<'a> {
     fn import_file(&mut self, file_name: &str) -> Result<(Vec<Rule>, ColorDefs)> {
         let content = read_stylesheet(&self.base_path, file_name)?;
         let mut parser = Parser {
+            id_increment: self.id_increment,
             tokenizer: Tokenizer::new(&content),
             base_path: self.base_path.clone(),
             file_name: file_name.to_string(),
@@ -295,7 +310,9 @@ impl<'a> Parser<'a> {
     }
 
     fn read_rule(&mut self, mut selector_start: TokenWithPosition<'a>) -> Result<Rule> {
+        self.id_increment += 1;
         let mut rule = Rule {
+            rule_id: self.id_increment,
             selectors: Vec::new(),
             properties: Vec::new(),
         };
@@ -335,6 +352,7 @@ impl<'a> Parser<'a> {
                     self.parse_error(format!("Unknown object type: {}", id), selector_first_token.position)
                 })?;
                 Selector {
+                    parent_selector: None,
                     object_type,
                     min_zoom: None,
                     max_zoom: None,

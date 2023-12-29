@@ -16,7 +16,6 @@ fn test_styling() {
     let reader = renderer::geodata::reader::GeodataReader::load(&bin_file).unwrap();
     let styler = Styler::new(
         parse_file(Path::new(&get_test_path(&["mapcss"])), "mapnik.mapcss").unwrap(),
-        &StyleType::Josm,
         None,
     );
 
@@ -30,7 +29,7 @@ fn test_styling() {
     );
 
     let named_ways = entities.ways.iter().filter(|x| x.tags().get_by_key("name").is_some());
-    let styles = styler.style_entities(named_ways, 18, false);
+    let styles = styler.style_entities(named_ways, &entities, 18, false);
 
     let get_styles = |id, name| {
         styles
@@ -148,7 +147,6 @@ fn from_josm_style(way_is_closed: bool, style: &str) -> Style {
         color: parse_color("color"),
         fill_color: parse_color("fill-color"),
         is_foreground_fill: false,
-        background_color: None,
         opacity: parse_num("opacity"),
         fill_opacity: parse_num("fill-opacity"),
 

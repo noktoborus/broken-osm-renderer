@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 pub const MAX_ZOOM: u8 = 16;
 pub const TILE_SIZE: u32 = 256;
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub struct Tile {
     pub zoom: u8,
     pub x: u32,

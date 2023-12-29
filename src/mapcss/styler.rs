@@ -1,14 +1,13 @@
+use crate::draw::point::Point;
+use crate::geodata::reader::{Multipolygon, Node, OsmArea, OsmEntities, OsmEntity, Way};
 use crate::mapcss::color::{from_color_name, Color};
 use crate::mapcss::parser::*;
-use crate::mapcss::style_cache::StyleCache;
-
-use crate::geodata::reader::{Multipolygon, Node, OsmArea, OsmEntity, Way};
 use indexmap::IndexMap;
 use std::cmp::Ordering;
+use std::fmt::Display;
 use std::sync::Arc;
-use std::sync::RwLock;
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Copy)]
 pub enum LineCap {
     Butt,
     Round,
@@ -21,54 +20,119 @@ pub enum TextPosition {
     Line,
 }
 
-pub fn is_non_trivial_cap(line_cap: &Option<LineCap>) -> bool {
-    matches!(*line_cap, Some(LineCap::Square) | Some(LineCap::Round))
-}
-
-pub enum StyleType {
-    Josm,
-    MapsMe,
+pub fn is_non_trivial_cap(line_cap: &LineCap) -> bool {
+    matches!(line_cap, LineCap::Square | LineCap::Round)
 }
 
 pub trait StyleableEntity {
+    fn default_text_position(&self) -> TextPosition;
     fn default_z_index(&self) -> f64;
     fn matches_object_type(&self, object_type: &ObjectType) -> bool;
 }
 
-pub trait CacheableEntity {
-    fn cache_slot(&self) -> usize;
-}
-
+#[derive(Debug, Clone)]
 pub struct TextStyle {
     pub text: String,
-    pub text_color: Option<Color>,
-    pub text_position: Option<TextPosition>,
-    pub font_size: Option<f64>,
+    pub text_color: Color,
+    pub text_position: TextPosition,
+    pub font_size: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct LabelStyle {
+    /// greater value of rule Id that used to fill this style
+    rule_id: RuleId,
+    pub icon_image: Option<String>,
+    pub text_style: Option<TextStyle>,
+}
+
+impl Display for LabelStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(icon_image) = &self.icon_image {
+            write!(f, ", icon-image: {:?}", icon_image)?;
+        }
+        if let Some(text_style) = &self.text_style {
+            write!(
+                f,
+                ", text: {:?}, font-size: {}, text-position: {:?}, text-color: {:?}",
+                text_style.text, text_style.font_size, text_style.text_position, text_style.text_color
+            )?;
+        }
+        write!(f, "")
+    }
+}
+
+#[derive(Debug)]
 pub struct Style {
-    pub layer: Option<i64>,
+    /// greater value of rule Id that used to fill this style
+    pub rule_id: RuleId,
+
+    pub layer: i64,
     pub z_index: f64,
 
-    pub color: Option<Color>,
-    pub fill_color: Option<Color>,
     pub is_foreground_fill: bool,
-    pub background_color: Option<Color>,
-    pub opacity: Option<f64>,
-    pub fill_opacity: Option<f64>,
 
-    pub width: Option<f64>,
+    pub fill_color: Option<Color>,
+    pub fill_image: Option<String>,
+    pub fill_opacity: f64,
+
+    pub color: Option<Color>,
+    pub opacity: f64,
+    pub width: f64,
     pub dashes: Option<Vec<f64>>,
-    pub line_cap: Option<LineCap>,
+    pub line_cap: LineCap,
 
     pub casing_color: Option<Color>,
-    pub casing_width: Option<f64>,
+    pub casing_width: f64,
     pub casing_dashes: Option<Vec<f64>>,
-    pub casing_line_cap: Option<LineCap>,
+    pub casing_line_cap: LineCap,
+}
 
-    pub icon_image: Option<String>,
-    pub fill_image: Option<String>,
-    pub text_style: Option<TextStyle>,
+impl Display for Style {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "layer: {}, z_index: {}, is_foreground_fill: {}",
+            self.layer, self.z_index, self.is_foreground_fill
+        )?;
+
+        if self.fill_color.is_some() || self.fill_image.is_some() {
+            write!(f, ", fill-opacity: {}", self.fill_opacity)?;
+
+            if let Some(fill_color) = &self.fill_color {
+                write!(f, ", fill-color: {:?}", fill_color)?;
+            }
+            if let Some(fill_image) = &self.fill_image {
+                write!(f, ", fill-image: {:?}", fill_image)?;
+            }
+        }
+
+        if let Some(color) = &self.color {
+            write!(
+                f,
+                ", opacity: {}, color: {:?}, width: {}, line-cap: {:?}",
+                self.opacity, color, self.width, self.line_cap
+            )?;
+
+            if let Some(dashes) = &self.dashes {
+                write!(f, ", dashes: {:?}", dashes)?;
+            }
+        }
+
+        if let Some(casing_color) = &self.casing_color {
+            write!(
+                f,
+                ", casing-width: {}, casing-color: {:?}, casing-line_cap: {:?}",
+                self.casing_width, casing_color, self.casing_line_cap
+            )?;
+
+            if let Some(casing_dashes) = &self.casing_dashes {
+                write!(f, ", casing_dashes: {:?}", casing_dashes)?;
+            }
+        }
+
+        write!(f, "")
+    }
 }
 
 pub struct Styler {
@@ -78,64 +142,125 @@ pub struct Styler {
     casing_width_multiplier: f64,
     font_size_multiplier: Option<f64>,
     rules: Vec<Rule>,
-
-    style_cache: RwLock<StyleCache>,
 }
 
-pub enum StyledArea<'a, 'wr>
+#[derive(Clone)]
+pub enum OsmEntityType<'a, 'wr>
 where
     'a: 'wr,
 {
+    Node(&'wr Node<'a>),
     Way(&'wr Way<'a>),
     Multipolygon(&'wr Multipolygon<'a>),
 }
 
-impl Styler {
-    pub fn new(rules: Vec<Rule>, style_type: &StyleType, font_size_multiplier: Option<f64>) -> Styler {
-        let use_caps_for_dashes = matches!(*style_type, StyleType::Josm);
-        let canvas_fill_color = extract_canvas_fill_color(&rules, style_type);
+pub trait TileRelative {
+    fn get_points(&self) -> Vec<Point>;
+    fn get_relation(&self) -> Vec<Vec<Point>>;
+}
 
-        let casing_width_multiplier = match *style_type {
-            StyleType::MapsMe => 1.0,
-            _ => 2.0,
-        };
+pub struct StyledEntities<'a, 'wr> {
+    pub styled: Vec<(OsmEntityType<'a, 'wr>, Arc<Style>)>,
+    pub labeled: Vec<(OsmEntityType<'a, 'wr>, Arc<LabelStyle>)>,
+}
 
-        let style_cache = StyleCache::new(&rules);
+impl<'a, 'wr> StyledEntities<'a, 'wr> {
+    pub fn new(styler: &Styler, entities: &'a OsmEntities<'a>, zoom: u8) -> Self {
+        let mut styled = Vec::new();
+        let mut labeled = Vec::new();
 
-        Styler {
-            use_caps_for_dashes,
-            canvas_fill_color,
-            casing_width_multiplier,
-            font_size_multiplier,
-            rules,
-            style_cache: RwLock::new(style_cache),
-        }
-    }
+        let _m = crate::perf_stats::measure("Styling");
 
-    pub fn style_entity<'e, 'wp, A>(&self, entity: &'wp A, zoom: u8) -> Vec<(&'wp A, Arc<Style>)>
-    where
-        A: CacheableEntity + StyleableEntity + OsmEntity<'e>,
-    {
-        let mut styled_areas: Vec<(&'wp A, Arc<Style>)> = Vec::new();
+        {
+            let _m = crate::perf_stats::measure("Style ways");
+            let mut iter = entities
+                .ways
+                .iter()
+                .flat_map(|way| styler.style_entity(way, entities, zoom));
 
-        let mut add_styles = |styles: &Vec<Arc<Style>>| {
-            for s in styles.iter() {
-                styled_areas.push((entity, Arc::clone(s)));
+            while let Some((element, style, labelstyle)) = iter.next() {
+                if let Some(labelstyle) = labelstyle {
+                    labeled.push((OsmEntityType::Way(element), labelstyle));
+                }
+                if let Some(style) = style {
+                    styled.push((OsmEntityType::Way(element), style));
+                }
             }
+        }
+
+        {
+            let _m = crate::perf_stats::measure("Style multipolygons");
+            let mut iter = entities
+                .multipolygons
+                .iter()
+                .flat_map(|way| styler.style_entity(way, entities, zoom));
+
+            while let Some((element, style, labelstyle)) = iter.next() {
+                if let Some(labelstyle) = labelstyle {
+                    labeled.push((OsmEntityType::Multipolygon(element), labelstyle));
+                }
+                if let Some(style) = style {
+                    styled.push((OsmEntityType::Multipolygon(element), style));
+                }
+            }
+        }
+
+        {
+            let _m = crate::perf_stats::measure("Sorting styled areas");
+            styled.sort_by(|(_, a), (_, b)| compare_styled_entities(&a, &b));
+        }
+
+        {
+            let _m = crate::perf_stats::measure("Style nodes");
+            entities
+                .nodes
+                .iter()
+                .flat_map(|entity| styler.style_entity(entity, entities, zoom))
+                .filter(|(_, _, labelstyle)| labelstyle.is_some())
+                .map(|(entity, _, labelstyle)| (OsmEntityType::Node(entity), labelstyle.unwrap()))
+                .for_each(|x| labeled.push(x));
         };
 
         {
-            let read_cache = self.style_cache.read().unwrap();
-            if let Some(styles) = read_cache.get(entity, zoom) {
-                add_styles(&styles);
-                return styled_areas;
-            }
+            let _m = crate::perf_stats::measure("Sorting labels");
+            labeled.sort_by(|(_, a), (_, b)| compare_styled_entities_labels(&a, &b));
         }
 
-        let default_z_index = entity.default_z_index();
+        Self { styled, labeled }
+    }
 
-        let all_property_maps = self.get_property_maps(entity, zoom);
+    pub fn is_empty(&self) -> bool {
+        self.styled.is_empty() && self.labeled.is_empty()
+    }
+}
 
+impl Styler {
+    pub fn new(rules: Vec<Rule>, font_size_multiplier: Option<f64>) -> Styler {
+        let canvas_fill_color = extract_canvas_fill_color(&rules);
+
+        Styler {
+            use_caps_for_dashes: true,
+            canvas_fill_color,
+            casing_width_multiplier: 2.0,
+            font_size_multiplier,
+            rules,
+        }
+    }
+
+    pub fn style<'a>(&'a self, entities: &'a OsmEntities<'a>, zoom: u8) -> StyledEntities {
+        StyledEntities::new(self, entities, zoom)
+    }
+
+    pub fn style_entity<'e, 'wp, A>(
+        &self,
+        entity: &'wp A,
+        entities: &OsmEntities<'_>,
+        zoom: u8,
+    ) -> Vec<(&'wp A, Option<Arc<Style>>, Option<Arc<LabelStyle>>)>
+    where
+        A: StyleableEntity + OsmEntity<'e>,
+    {
+        let all_property_maps = self.get_property_maps(entity, entities, zoom);
         let base_layer = all_property_maps
             .iter()
             .find(|kvp| *kvp.0 == BASE_LAYER_NAME)
@@ -144,83 +269,31 @@ impl Styler {
         let mut styles = Vec::new();
         for (layer, prop_map) in &all_property_maps {
             if *layer != "*" {
-                styles.push(Arc::new(property_map_to_style(
-                    prop_map,
-                    base_layer,
-                    default_z_index,
-                    self.casing_width_multiplier,
-                    &self.font_size_multiplier,
+                styles.push((
                     entity,
-                )))
+                    property_map_to_style(prop_map, base_layer, self.casing_width_multiplier, entity)
+                        .map(|x| Arc::new(x)),
+                    property_map_to_labelstyle(prop_map, &self.font_size_multiplier, entity).map(|x| Arc::new(x)),
+                ))
             }
         }
 
-        add_styles(&styles);
-        self.style_cache.write().unwrap().insert(entity, zoom, styles);
-        styled_areas
+        styles
     }
 
-    pub fn style_entities<'e, 'wp, I, A>(&self, areas: I, zoom: u8, for_labels: bool) -> Vec<(&'wp A, Arc<Style>)>
-    where
-        A: CacheableEntity + StyleableEntity + OsmEntity<'e>,
-        I: Iterator<Item = &'wp A>,
-    {
-        let mut styled_areas: Vec<_> = areas.flat_map(|entity| self.style_entity(entity, zoom)).collect();
-
-        styled_areas.sort_by(|a, b| compare_styled_entities(a, b, for_labels));
-        styled_areas
-    }
-
-    pub fn style_areas<'a, 'wr>(
-        &self,
-        ways: impl Iterator<Item = &'wr Way<'a>>,
-        multipolygons: impl Iterator<Item = &'wr Multipolygon<'a>>,
-        zoom: u8,
-        for_labels: bool,
-    ) -> Vec<(StyledArea<'a, 'wr>, Arc<Style>)> {
-        let styled_ways = self.style_entities(ways, zoom, for_labels);
-        let styled_multipolygons = self.style_entities(multipolygons, zoom, for_labels);
-
-        let mut mp_iter = styled_multipolygons.into_iter();
-        let mut way_iter = styled_ways.into_iter();
-        let mut poly = mp_iter.next();
-        let mut way = way_iter.next();
-        let mut result = Vec::new();
-        loop {
-            let is_rel_better = {
-                match (&poly, &way) {
-                    (None, None) => break,
-                    (Some(_), None) => true,
-                    (None, Some(_)) => false,
-                    (Some(mp), Some(way)) => compare_styled_entities(mp, way, for_labels) != Ordering::Greater,
-                }
-            };
-            if is_rel_better {
-                let (mp, style) = poly.unwrap();
-                result.push((StyledArea::Multipolygon(mp), style));
-                poly = mp_iter.next();
-            } else {
-                let (w, style) = way.unwrap();
-                result.push((StyledArea::Way(w), style));
-                way = way_iter.next();
-            }
-        }
-        result
-    }
-
-    fn get_property_maps<'r, 'e, A>(&'r self, area: &A, zoom: u8) -> LayerToPropertyMap<'r>
+    fn get_property_maps<'r, 'e, A>(&'r self, area: &A, entities: &OsmEntities<'_>, zoom: u8) -> LayerToPropertyMap<'r>
     where
         A: StyleableEntity + OsmEntity<'e>,
     {
         let mut result: LayerToPropertyMap<'r> = IndexMap::new();
 
         for rule in &self.rules {
-            for sel in rule.selectors.iter().filter(|x| area_matches(area, x, zoom)) {
+            for sel in rule.selectors.iter().filter(|x| area_matches(area, entities, x, zoom)) {
                 let layer_id = get_layer_id(sel);
 
                 let update_layer = |layer: &mut PropertyMap<'r>| {
                     for prop in &rule.properties {
-                        layer.insert(prop.name.clone(), &prop.value);
+                        layer.insert(prop.name.clone(), (rule.rule_id, &prop.value));
                     }
                 };
 
@@ -249,24 +322,14 @@ impl Styler {
 }
 
 #[cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp))]
-fn compare_styled_entities<'a, E1, E2>(
-    (a, a_style): &(&E1, Arc<Style>),
-    (b, b_style): &(&E2, Arc<Style>),
-    for_labels: bool,
-) -> Ordering
-where
-    E1: OsmEntity<'a>,
-    E2: OsmEntity<'a>,
-{
-    let get_layer = |s: &Style| s.layer.unwrap_or(0);
-
-    let (a_layer, b_layer) = (get_layer(a_style), get_layer(b_style));
+fn compare_styled_entities(a_style: &Arc<Style>, b_style: &Arc<Style>) -> Ordering {
+    let (a_layer, b_layer) = (a_style.layer, b_style.layer);
 
     if a_layer != b_layer {
         return a_layer.cmp(&b_layer);
     }
 
-    if !for_labels && a_style.is_foreground_fill != b_style.is_foreground_fill {
+    if a_style.is_foreground_fill != b_style.is_foreground_fill {
         return a_style.is_foreground_fill.cmp(&b_style.is_foreground_fill);
     }
 
@@ -274,22 +337,25 @@ where
         return a_style.z_index.partial_cmp(&b_style.z_index).unwrap();
     }
 
-    a.global_id().cmp(&b.global_id())
+    a_style.rule_id.cmp(&b_style.rule_id)
+}
+
+#[cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp))]
+fn compare_styled_entities_labels(a_labelstyle: &Arc<LabelStyle>, b_labelstyle: &Arc<LabelStyle>) -> Ordering {
+    a_labelstyle.rule_id.cmp(&b_labelstyle.rule_id)
 }
 
 type LayerToPropertyMap<'r> = IndexMap<&'r str, PropertyMap<'r>>;
-type PropertyMap<'r> = IndexMap<String, &'r PropertyValue>;
+type PropertyMap<'r> = IndexMap<String, (RuleId, &'r PropertyValue)>;
 
 fn property_map_to_style<'r, 'e, E>(
     current_layer_map: &'r PropertyMap<'r>,
     base_layer_map: Option<&'r PropertyMap<'r>>,
-    default_z_index: f64,
     casing_width_multiplier: f64,
-    font_size_multiplier: &Option<f64>,
     osm_entity: &E,
-) -> Style
+) -> Option<Style>
 where
-    E: OsmEntity<'e>,
+    E: StyleableEntity + OsmEntity<'e>,
 {
     let warn = |prop_map: &'r PropertyMap<'r>, prop_name, msg| {
         if let Some(val) = prop_map.get(prop_name) {
@@ -303,7 +369,9 @@ where
         }
     };
 
-    let get_color = |prop_name| match current_layer_map.get(prop_name) {
+    let get_rule_id = |prop_name| current_layer_map.get(prop_name).map(|(rule_id, _)| *rule_id);
+
+    let get_color = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
         Some(&PropertyValue::Color(color)) => Some(color.clone()),
         Some(&PropertyValue::Identifier(id)) => {
             let color = from_color_name(id.as_str());
@@ -318,7 +386,7 @@ where
         }
     };
 
-    let get_num = |prop_map: &'r PropertyMap<'r>, prop_name| match prop_map.get(prop_name) {
+    let get_num = |prop_map: &'r PropertyMap<'r>, prop_name| match prop_map.get(prop_name).map(|(_, prop)| prop) {
         Some(&PropertyValue::Numbers(nums)) if nums.len() == 1 => Some(nums[0]),
         _ => {
             warn(prop_map, prop_name, "expected a number");
@@ -326,7 +394,7 @@ where
         }
     };
 
-    let get_id = |prop_name| match current_layer_map.get(prop_name) {
+    let get_id = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
         Some(&PropertyValue::Identifier(id)) => Some(id.as_str()),
         _ => {
             warn(current_layer_map, prop_name, "expected an identifier");
@@ -334,7 +402,7 @@ where
         }
     };
 
-    let get_string = |prop_name| match current_layer_map.get(prop_name) {
+    let get_string = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
         Some(&PropertyValue::Identifier(id)) => Some(id.to_string()),
         Some(&PropertyValue::String(str)) => Some(str.to_string()),
         _ => {
@@ -353,16 +421,7 @@ where
         }
     };
 
-    let get_text_position = |prop_name| match get_id(prop_name) {
-        Some("center") => Some(TextPosition::Center),
-        Some("line") => Some(TextPosition::Line),
-        _ => {
-            warn(current_layer_map, prop_name, "unknown text position type");
-            None
-        }
-    };
-
-    let get_dashes = |prop_name| match current_layer_map.get(prop_name) {
+    let get_dashes = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
         Some(&PropertyValue::Numbers(nums)) => Some(nums.clone()),
         _ => {
             warn(current_layer_map, prop_name, "expected a sequence of numbers");
@@ -373,18 +432,18 @@ where
     let layer = osm_entity
         .tags()
         .get_by_key("layer")
-        .and_then(|x| x.parse::<i64>().ok());
-    let z_index = get_num(current_layer_map, "z-index").unwrap_or(default_z_index);
+        .and_then(|x| x.parse::<i64>().ok())
+        .unwrap_or(0);
+    let z_index = get_num(current_layer_map, "z-index").unwrap_or(osm_entity.default_z_index());
 
-    let is_foreground_fill =
-        !matches!(current_layer_map.get("fill-position"), Some(&PropertyValue::Identifier(id)) if *id == "background");
+    let is_foreground_fill = !matches!(current_layer_map.get("fill-position").map(|(_, prop)| prop), Some(&PropertyValue::Identifier(id)) if id == "background");
 
     let width = get_num(current_layer_map, "width");
 
     let base_width_for_casing = width
         .or_else(|| base_layer_map.and_then(|prop_map| get_num(prop_map, "width")))
         .unwrap_or_default();
-    let casing_only_width = match current_layer_map.get("casing-width") {
+    let casing_only_width = match current_layer_map.get("casing-width").map(|(_, prop)| prop) {
         Some(&PropertyValue::Numbers(nums)) if nums.len() == 1 => Some(nums[0]),
         Some(&&PropertyValue::WidthDelta(num)) => Some(base_width_for_casing + num),
         _ => {
@@ -395,54 +454,163 @@ where
             );
             None
         }
-    };
-    let full_casing_width = casing_only_width.map(|w| base_width_for_casing + casing_width_multiplier * w);
-    let text = get_string("text");
+    }
+    .unwrap_or(1.0);
 
-    let font_size = get_num(current_layer_map, "font-size").map(|x| x * font_size_multiplier.unwrap_or(1.0));
+    let full_casing_width = base_width_for_casing + casing_width_multiplier * casing_only_width;
+    let color = get_color("color");
+    let fill_color = get_color("fill-color");
+    let casing_color = get_color("casing-color");
+    let fill_image = get_string("fill-image");
 
-    let text_style = text.map(|text| TextStyle {
-        text,
-        text_color: get_color("text-color"),
-        text_position: get_text_position("text-position"),
-        font_size,
-    });
+    if color.is_some() || fill_color.is_some() || casing_color.is_some() || fill_image.is_some() {
+        let rule_id = [
+            get_rule_id("color"),
+            get_rule_id("fill-color"),
+            get_rule_id("casing-color"),
+        ]
+        .iter()
+        .filter(|x| x.is_some())
+        .map(|x| x.unwrap())
+        .max()
+        .unwrap();
 
-    Style {
-        layer,
-        z_index,
+        Some(Style {
+            rule_id,
 
-        color: get_color("color"),
-        fill_color: get_color("fill-color"),
-        is_foreground_fill,
-        background_color: get_color("background-color"),
-        opacity: get_num(current_layer_map, "opacity"),
-        fill_opacity: get_num(current_layer_map, "fill-opacity"),
+            layer,
+            z_index,
 
-        width,
-        dashes: get_dashes("dashes"),
-        line_cap: get_line_cap("linecap"),
+            is_foreground_fill,
 
-        casing_color: get_color("casing-color"),
-        casing_width: full_casing_width,
-        casing_dashes: get_dashes("casing-dashes"),
-        casing_line_cap: get_line_cap("casing-linecap"),
+            color,
+            fill_color,
+            opacity: get_num(current_layer_map, "opacity").unwrap_or(1.0),
+            fill_opacity: get_num(current_layer_map, "fill-opacity").unwrap_or(1.0),
 
-        icon_image: get_string("icon-image"),
-        fill_image: get_string("fill-image"),
-        text_style,
+            width: width.unwrap_or(1.0),
+            dashes: get_dashes("dashes"),
+            line_cap: get_line_cap("linecap").unwrap_or(LineCap::Butt),
+
+            casing_color,
+            casing_width: full_casing_width,
+            casing_dashes: get_dashes("casing-dashes"),
+            casing_line_cap: get_line_cap("casing-linecap").unwrap_or(LineCap::Butt),
+
+            fill_image,
+        })
+    } else {
+        None
     }
 }
 
-fn extract_canvas_fill_color(rules: &[Rule], style_type: &StyleType) -> Option<Color> {
-    let color_prop = match *style_type {
-        StyleType::Josm => "fill-color",
-        StyleType::MapsMe => "background-color",
+fn property_map_to_labelstyle<'r, 'e, E>(
+    current_layer_map: &'r PropertyMap<'r>,
+    font_size_multiplier: &Option<f64>,
+    osm_entity: &E,
+) -> Option<LabelStyle>
+where
+    E: StyleableEntity + OsmEntity<'e>,
+{
+    let warn = |prop_map: &'r PropertyMap<'r>, prop_name, msg| {
+        if let Some(val) = prop_map.get(prop_name) {
+            eprintln!(
+                "Entity #{}, property \"{}\" (value {:?}): {}",
+                osm_entity.global_id(),
+                prop_name,
+                val,
+                msg
+            );
+        }
     };
+
+    let get_rule_id = |prop_name| current_layer_map.get(prop_name).map(|(rule_id, _)| *rule_id);
+
+    let get_color = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
+        Some(&PropertyValue::Color(color)) => Some(color.clone()),
+        Some(&PropertyValue::Identifier(id)) => {
+            let color = from_color_name(id.as_str());
+            if color.is_none() {
+                warn(current_layer_map, prop_name, "unknown color");
+            }
+            color
+        }
+        _ => {
+            warn(current_layer_map, prop_name, "expected a valid color");
+            None
+        }
+    };
+
+    let get_num = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
+        Some(&PropertyValue::Numbers(nums)) if nums.len() == 1 => Some(nums[0]),
+        _ => {
+            warn(current_layer_map, prop_name, "expected a number");
+            None
+        }
+    };
+
+    let get_id = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
+        Some(&PropertyValue::Identifier(id)) => Some(id.as_str()),
+        _ => {
+            warn(current_layer_map, prop_name, "expected an identifier");
+            None
+        }
+    };
+
+    let get_string = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
+        Some(&PropertyValue::Identifier(id)) => Some(id.to_string()),
+        Some(&PropertyValue::String(str)) => Some(str.to_string()),
+        _ => {
+            warn(current_layer_map, prop_name, "expected a string");
+            None
+        }
+    };
+
+    let get_text_position = |prop_name| match get_id(prop_name) {
+        Some("center") => Some(TextPosition::Center),
+        Some("line") => Some(TextPosition::Line),
+        _ => {
+            warn(current_layer_map, prop_name, "unknown text position type");
+            None
+        }
+    };
+
+    let text = get_string("text").and_then(|tagkey| osm_entity.tags().get_by_key(tagkey.as_ref()));
+    let font_size = get_num("font-size").map(|x| x * font_size_multiplier.unwrap_or(1.0));
+    let icon_image = get_string("icon-image");
+    let text_style = match font_size {
+        Some(font_size) => text.map(|text| TextStyle {
+            text: text.to_string(),
+            text_color: get_color("text-color").unwrap_or(Color { r: 0, g: 0, b: 0 }),
+            text_position: get_text_position("text-position").unwrap_or(osm_entity.default_text_position()),
+            font_size,
+        }),
+        None => None,
+    };
+
+    if icon_image.is_some() || text_style.is_some() {
+        let rule_id = [get_rule_id("icon-image"), get_rule_id("text")]
+            .iter()
+            .filter(|x| x.is_some())
+            .map(|x| x.unwrap())
+            .max()
+            .unwrap();
+
+        Some(LabelStyle {
+            rule_id,
+            text_style,
+            icon_image,
+        })
+    } else {
+        None
+    }
+}
+
+fn extract_canvas_fill_color(rules: &[Rule]) -> Option<Color> {
     for r in rules {
         for selector in &r.selectors {
             if let ObjectType::Canvas = selector.object_type {
-                for prop in r.properties.iter().filter(|x| x.name == *color_prop) {
+                for prop in r.properties.iter().filter(|x| x.name == "fill-color") {
                     if let PropertyValue::Color(ref color) = prop.value {
                         return Some(color.clone());
                     }
@@ -504,7 +672,34 @@ where
     }
 }
 
-fn area_matches<'e, A>(area: &A, selector: &Selector, zoom: u8) -> bool
+fn parent_matches<'e, E>(entity: &E, entities: &OsmEntities<'_>, parent_selector: &ParentSelector) -> bool
+where
+    E: OsmEntity<'e>,
+{
+    if entity.is_node() {
+        let my_node_id = entity.global_id();
+
+        for way in entities
+            .ways
+            .iter()
+            .filter(|x| x.matches_object_type(&parent_selector.object_type))
+        {
+            for i in 0..way.node_count() {
+                if way.get_node(i).global_id() == my_node_id {
+                    if parent_selector.tests.iter().all(|test| matches_by_tags(way, test)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // TODO: matches to relations
+    } else if entity.is_way() {
+        // TODO: matches to relations
+    }
+    return false;
+}
+
+fn area_matches<'e, A>(area: &A, entities: &OsmEntities<'_>, selector: &Selector, zoom: u8) -> bool
 where
     A: StyleableEntity + OsmEntity<'e>,
 {
@@ -520,9 +715,21 @@ where
         }
     }
 
-    let good_object_type = area.matches_object_type(&selector.object_type);
+    if !area.matches_object_type(&selector.object_type) {
+        return false;
+    }
 
-    good_object_type && selector.tests.iter().all(|x| matches_by_tags(area, x))
+    if !selector.tests.iter().all(|x| matches_by_tags(area, x)) {
+        return false;
+    }
+
+    if let Some(parent_selector) = &selector.parent_selector {
+        if !parent_matches(area, entities, parent_selector) {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn get_layer_id(selector: &Selector) -> &str {
@@ -542,6 +749,10 @@ impl<'a> StyleableEntity for Node<'a> {
     fn matches_object_type(&self, object_type: &ObjectType) -> bool {
         matches!(*object_type, ObjectType::Node)
     }
+
+    fn default_text_position(&self) -> TextPosition {
+        TextPosition::Center
+    }
 }
 
 impl<A: OsmArea> StyleableEntity for A {
@@ -560,26 +771,12 @@ impl<A: OsmArea> StyleableEntity for A {
             _ => false,
         }
     }
-}
 
-impl<'a> CacheableEntity for Node<'a> {
-    fn cache_slot(&self) -> usize {
-        0
-    }
-}
-
-impl<'a> CacheableEntity for Way<'a> {
-    fn cache_slot(&self) -> usize {
+    fn default_text_position(&self) -> TextPosition {
         if self.is_closed() {
-            1
+            TextPosition::Center
         } else {
-            2
+            TextPosition::Line
         }
-    }
-}
-
-impl<'a> CacheableEntity for Multipolygon<'a> {
-    fn cache_slot(&self) -> usize {
-        3
     }
 }

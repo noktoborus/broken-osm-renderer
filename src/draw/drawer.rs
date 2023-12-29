@@ -1,16 +1,15 @@
 use crate::draw::fill::{fill_contour, Filler};
 use crate::draw::icon_cache::IconCache;
+use crate::draw::labelable::TiledEntitySource;
 use crate::draw::labeler::Labeler;
 use crate::draw::line::draw_lines;
 use crate::draw::png_writer::rgb_triples_to_png;
 use crate::draw::point_pairs::PointPairCollection;
 use crate::draw::tile_pixels::{RgbTriples, TilePixels};
-use crate::geodata::reader::{Node, OsmEntities, OsmEntity};
-use crate::mapcss::styler::{Style, StyledArea, Styler, TextPosition};
+use crate::mapcss::styler::{Style, StyledEntities, Styler};
 use crate::tile::tile::Tile;
 use anyhow::Result;
 use std::path::Path;
-use std::sync::Arc;
 
 pub struct Drawer {
     icon_cache: IconCache,
@@ -37,15 +36,15 @@ impl Drawer {
         }
     }
 
-    pub fn draw_tile(
+    pub fn draw(
         &self,
-        entities: &OsmEntities<'_>,
-        tile: &Tile,
+        styled_entities: &StyledEntities,
         pixels: &mut TilePixels,
-        scale: usize,
+        tile: &Tile,
+        scale: f64,
         styler: &Styler,
     ) -> Result<Vec<u8>> {
-        let rendered_pixels = self.draw_to_pixels(entities, tile, pixels, scale, styler);
+        let rendered_pixels = self.draw_to_pixels(styled_entities, pixels, tile, scale, styler);
 
         {
             let _m = crate::perf_stats::measure("RGB triples to PNG");
@@ -59,10 +58,10 @@ impl Drawer {
 
     pub fn draw_to_pixels(
         &self,
-        entities: &OsmEntities<'_>,
-        tile: &Tile,
+        styled_entities: &StyledEntities,
         pixels: &mut TilePixels,
-        scale: usize,
+        tile: &Tile,
+        scale: f64,
         styler: &Styler,
     ) -> TileRenderedPixels {
         {
@@ -70,31 +69,24 @@ impl Drawer {
             pixels.reset(&styler.canvas_fill_color);
         }
 
-        let styled_areas = {
-            let _m = crate::perf_stats::measure("Style areas");
-            styler.style_areas(entities.ways.iter(), entities.multipolygons.iter(), tile.zoom, false)
-        };
-
-        let float_scale = scale as f64;
-
         let draw_areas_with_type = |pixels: &mut TilePixels, draw_type| {
-            self.draw_areas(
-                pixels,
-                &styled_areas,
-                tile,
-                float_scale,
-                draw_type,
-                styler.use_caps_for_dashes,
-            );
+            styled_entities.styled.iter().for_each(|(entity, style)| {
+                self.draw_geometry(pixels, &entity.get_tiled(tile), style, scale, styler, draw_type)
+            });
         };
 
         {
             let _m = crate::perf_stats::measure("Fill areas");
             draw_areas_with_type(pixels, &DrawType::Fill);
         }
+
         {
-            let _m = crate::perf_stats::measure("Draw areas");
+            let _m = crate::perf_stats::measure("Draw casing");
             draw_areas_with_type(pixels, &DrawType::Casing);
+        }
+
+        {
+            let _m = crate::perf_stats::measure("Draw stroke");
             draw_areas_with_type(pixels, &DrawType::Stroke);
         }
 
@@ -103,19 +95,9 @@ impl Drawer {
             pixels.blend_unfinished_pixels(false);
         }
 
-        let styled_areas_for_labels = {
-            let _m = crate::perf_stats::measure("Style area for labels");
-            styler.style_areas(entities.ways.iter(), entities.multipolygons.iter(), tile.zoom, true)
-        };
-
-        let styled_nodes = {
-            let _m = crate::perf_stats::measure("Style nodes");
-            styler.style_entities(entities.nodes.iter(), tile.zoom, true)
-        };
-
         {
             let _m = crate::perf_stats::measure("Draw labels");
-            self.draw_labels(pixels, tile, float_scale, &styled_areas_for_labels, &styled_nodes);
+            self.draw_labels(pixels, &styled_entities, scale, tile);
         }
 
         {
@@ -129,83 +111,67 @@ impl Drawer {
         }
     }
 
-    fn draw_areas(
-        &self,
-        pixels: &mut TilePixels,
-        areas: &[(StyledArea<'_, '_>, Arc<Style>)],
-        tile: &Tile,
-        scale: f64,
-        draw_type: &DrawType,
-        use_caps_for_dashes: bool,
-    ) {
-        for (area, style) in areas {
-            match area {
-                StyledArea::Way(way) => {
-                    self.draw_one_area(pixels, tile, scale, *way, style, draw_type, use_caps_for_dashes);
-                }
-                StyledArea::Multipolygon(rel) => {
-                    self.draw_one_area(pixels, tile, scale, *rel, style, draw_type, use_caps_for_dashes);
-                }
+    fn draw_labels(&self, pixels: &mut TilePixels, styled_entities: &StyledEntities, scale: f64, tile: &Tile) {
+        {
+            let _m = crate::perf_stats::measure("Label areas");
+            for (entity, labelstyle) in &styled_entities.labeled {
+                self.labeler
+                    .label_entity(&entity.get_tiled(tile), &labelstyle, scale, &self.icon_cache, pixels);
             }
         }
     }
 
-    fn draw_one_area<'e, A>(
+    fn draw_geometry<'e, A>(
         &self,
         pixels: &mut TilePixels,
-        tile: &'e Tile,
-        scale: f64,
-        area: &'e A,
+        relation: &'e A,
         style: &Style,
+        scale: f64,
+        styler: &Styler,
         draw_type: &DrawType,
-        use_caps_for_dashes: bool,
     ) where
-        A: OsmEntity<'e> + PointPairCollection<'e>,
+        A: PointPairCollection<'e>,
     {
-        let points = area.to_point_pairs(tile, scale);
-        let float_or_one = |num: &Option<f64>| num.unwrap_or(1.0);
+        let points = relation.to_point_pairs(scale);
 
         let scale_dashes =
             |dashes: &Option<Vec<f64>>| dashes.as_ref().map(|nums| nums.iter().map(|x| x * scale).collect());
 
         match *draw_type {
             DrawType::Fill => {
-                let opacity = float_or_one(&style.fill_opacity);
                 if let Some(ref color) = style.fill_color {
-                    fill_contour(points, &Filler::Color(color), opacity, pixels);
+                    fill_contour(points, &Filler::Color(color), style.fill_opacity, pixels);
                 } else if let Some(ref icon_name) = style.fill_image {
                     let read_icon_cache = self.icon_cache.open_read_session(icon_name);
                     if let Some(Some(icon)) = read_icon_cache.get(icon_name) {
-                        fill_contour(points, &Filler::Image(icon), opacity, pixels);
+                        fill_contour(points, &Filler::Image(icon), style.fill_opacity, pixels);
                     }
                 }
             }
             DrawType::Casing => {
                 if let Some(color) = style.casing_color.as_ref() {
-                    if let Some(casing_width) = style.casing_width {
-                        draw_lines(
-                            points,
-                            casing_width * scale,
-                            color,
-                            1.0,
-                            &scale_dashes(&style.casing_dashes),
-                            &style.casing_line_cap,
-                            use_caps_for_dashes,
-                            pixels,
-                        );
-                    }
+                    draw_lines(
+                        points,
+                        style.casing_width * scale,
+                        color,
+                        1.0,
+                        &scale_dashes(&style.casing_dashes),
+                        style.casing_line_cap,
+                        styler.use_caps_for_dashes,
+                        pixels,
+                    );
                 }
             }
             DrawType::Stroke => {
                 if let Some(color) = style.color.as_ref() {
                     draw_lines(
                         points,
-                        scale * float_or_one(&style.width),
+                        scale * &style.width,
                         color,
-                        float_or_one(&style.opacity),
+                        style.opacity,
                         &scale_dashes(&style.dashes),
-                        &style.line_cap,
-                        use_caps_for_dashes,
+                        style.line_cap,
+                        styler.use_caps_for_dashes,
                         pixels,
                     );
                 }
@@ -213,48 +179,5 @@ impl Drawer {
         }
 
         pixels.bump_generation();
-    }
-
-    fn draw_labels(
-        &self,
-        pixels: &mut TilePixels,
-        tile: &Tile,
-        scale: f64,
-        areas: &[(StyledArea<'_, '_>, Arc<Style>)],
-        nodes: &[(&Node<'_>, Arc<Style>)],
-    ) {
-        {
-            let _m = crate::perf_stats::measure("Label areas");
-            for (area, style) in areas {
-                match area {
-                    StyledArea::Way(way) => self.labeler.label_entity(
-                        *way,
-                        style,
-                        tile,
-                        scale,
-                        &self.icon_cache,
-                        TextPosition::Line,
-                        pixels,
-                    ),
-                    StyledArea::Multipolygon(rel) => self.labeler.label_entity(
-                        *rel,
-                        style,
-                        tile,
-                        scale,
-                        &self.icon_cache,
-                        TextPosition::Center,
-                        pixels,
-                    ),
-                }
-            }
-        }
-
-        {
-            let _m = crate::perf_stats::measure("Label nodes");
-            for &(node, ref style) in nodes {
-                self.labeler
-                    .label_entity(node, style, tile, scale, &self.icon_cache, TextPosition::Center, pixels);
-            }
-        }
     }
 }

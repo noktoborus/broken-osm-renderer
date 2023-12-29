@@ -3,9 +3,7 @@ use crate::draw::icon::Icon;
 use crate::draw::icon_cache::IconCache;
 use crate::draw::labelable::Labelable;
 use crate::draw::tile_pixels::TilePixels;
-use crate::geodata::reader::OsmEntity;
-use crate::mapcss::styler::{Style, TextPosition};
-use crate::tile::tile::Tile;
+use crate::mapcss::styler::LabelStyle;
 
 #[derive(Default)]
 pub struct Labeler {
@@ -16,18 +14,16 @@ impl Labeler {
     pub fn label_entity<'e, E>(
         &self,
         entity: &E,
-        style: &Style,
-        tile: &Tile,
+        style: &LabelStyle,
         scale: f64,
         icon_cache: &IconCache,
-        default_text_position: TextPosition,
         pixels: &mut TilePixels,
     ) where
-        E: Labelable + OsmEntity<'e>,
+        E: Labelable,
     {
         let succeeded = {
-            if let Some(y_offset) = self.label_with_icon(entity, style, tile, scale, icon_cache, pixels) {
-                self.label_with_text(entity, style, tile, scale, y_offset, default_text_position, pixels)
+            if let Some(y_offset) = self.label_with_icon(entity, style, scale, icon_cache, pixels) {
+                self.label_with_text(entity, style, scale, y_offset, pixels)
             } else {
                 false
             }
@@ -39,8 +35,7 @@ impl Labeler {
     fn label_with_icon(
         &self,
         entity: &impl Labelable,
-        style: &Style,
-        tile: &Tile,
+        style: &LabelStyle,
         scale: f64,
         icon_cache: &IconCache,
         pixels: &mut TilePixels,
@@ -53,7 +48,7 @@ impl Labeler {
         let read_icon_cache = icon_cache.open_read_session(icon_name);
 
         if let Some(Some(icon)) = read_icon_cache.get(icon_name) {
-            let (center_x, center_y) = match entity.get_label_position(tile, scale) {
+            let (center_x, center_y) = match entity.get_label_position(scale) {
                 Some(center) => center,
                 _ => return Some(0),
             };
@@ -70,19 +65,16 @@ impl Labeler {
     fn label_with_text<'e, E>(
         &self,
         entity: &E,
-        style: &Style,
-        tile: &Tile,
+        style: &LabelStyle,
         scale: f64,
         y_offset: usize,
-        default_text_position: TextPosition,
         pixels: &mut TilePixels,
     ) -> bool
     where
-        E: Labelable + OsmEntity<'e>,
+        E: Labelable,
     {
         if let Some(ref text_style) = style.text_style {
-            self.text_placer
-                .place(entity, text_style, tile, scale, y_offset, default_text_position, pixels)
+            self.text_placer.place(entity, text_style, scale, y_offset, pixels)
         } else {
             true
         }

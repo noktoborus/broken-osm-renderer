@@ -13,7 +13,7 @@ pub struct OpacityData {
 }
 
 impl OpacityCalculator {
-    pub fn new(half_line_width: f64, dashes: &Option<Vec<f64>>, line_cap: &Option<LineCap>) -> Self {
+    pub fn new(half_line_width: f64, dashes: &Option<Vec<f64>>, line_cap: LineCap) -> Self {
         let mut dash_segments = Vec::new();
         let mut len_before = 0.0;
 
@@ -98,7 +98,7 @@ struct DashSegment {
 fn compute_segments(
     half_line_width: f64,
     dashes: &[f64],
-    line_cap: &Option<LineCap>,
+    line_cap: LineCap,
     segments: &mut Vec<DashSegment>,
     len_before: &mut f64,
 ) {
@@ -119,12 +119,12 @@ fn compute_segments(
 
         let mut end = start + dash;
 
-        let original_endpoints = match *line_cap {
-            Some(LineCap::Round) => Some((start, end)),
+        let original_endpoints = match line_cap {
+            LineCap::Round => Some((start, end)),
             _ => None,
         };
 
-        if is_non_trivial_cap(line_cap) {
+        if is_non_trivial_cap(&line_cap) {
             start -= half_line_width;
             end += half_line_width;
         }

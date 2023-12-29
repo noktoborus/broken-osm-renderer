@@ -16,6 +16,8 @@ use std::str;
 pub trait OsmEntity<'a> {
     fn global_id(&self) -> u64;
     fn tags(&self) -> Tags<'a>;
+    fn is_node(&self) -> bool;
+    fn is_way(&self) -> bool;
 }
 
 pub struct OsmEntities<'a> {
@@ -411,7 +413,7 @@ struct BaseOsmEntity<'a> {
 }
 
 macro_rules! implement_osm_entity {
-    ($type_name:ty) => {
+    ($type_name:ty, $basetype:ty) => {
         impl<'a> PartialEq for $type_name {
             fn eq(&self, other: &$type_name) -> bool {
                 self.global_id() == other.global_id()
@@ -436,6 +438,22 @@ macro_rules! implement_osm_entity {
                 let start_pos = entity.bytes.len() - INT_REF_SIZE;
                 entity.reader.tags(&entity.bytes[start_pos..])
             }
+
+            fn is_node(&self) -> bool {
+                if std::any::TypeId::of::<$basetype>() == std::any::TypeId::of::<Node>() {
+                    true
+                } else {
+                    false
+                }
+            }
+
+            fn is_way(&self) -> bool {
+                if std::any::TypeId::of::<$basetype>() == std::any::TypeId::of::<Way>() {
+                    true
+                } else {
+                    false
+                }
+            }
         }
     };
 }
@@ -445,7 +463,7 @@ pub struct Node<'a> {
     entity: BaseOsmEntity<'a>,
 }
 
-implement_osm_entity!(Node<'a>);
+implement_osm_entity!(Node<'a>, Node);
 
 impl<'a> Coords for Node<'a> {
     fn lat(&self) -> f64 {
@@ -464,7 +482,7 @@ pub struct Way<'a> {
     node_ids: &'a [u32],
 }
 
-implement_osm_entity!(Way<'a>);
+implement_osm_entity!(Way<'a>, Way);
 
 impl<'a> Way<'a> {
     pub fn node_count(&self) -> usize {
@@ -509,7 +527,7 @@ pub struct Multipolygon<'a> {
     polygon_ids: &'a [u32],
 }
 
-implement_osm_entity!(Multipolygon<'a>);
+implement_osm_entity!(Multipolygon<'a>, Multipolygon);
 
 impl<'a> Multipolygon<'a> {
     pub fn polygon_count(&self) -> usize {
