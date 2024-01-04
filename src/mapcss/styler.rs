@@ -478,6 +478,7 @@ where
             get_rule_id("color"),
             get_rule_id("fill-color"),
             get_rule_id("casing-color"),
+            get_rule_id("fill-image"),
         ]
         .iter()
         .filter(|x| x.is_some())
@@ -765,7 +766,7 @@ impl<'a> StyleableEntity for Node<'a> {
     }
 }
 
-impl<A: OsmArea> StyleableEntity for A {
+impl<'a> StyleableEntity for Way<'a> {
     fn default_z_index(&self) -> f64 {
         if self.is_closed() {
             1.0
@@ -778,6 +779,32 @@ impl<A: OsmArea> StyleableEntity for A {
         match *object_type {
             ObjectType::Way => true,
             ObjectType::Area => self.is_closed(),
+            _ => false,
+        }
+    }
+
+    fn default_text_position(&self) -> TextPosition {
+        if self.is_closed() {
+            TextPosition::Center
+        } else {
+            TextPosition::Line
+        }
+    }
+}
+
+impl<'a> StyleableEntity for Multipolygon<'a> {
+    fn default_z_index(&self) -> f64 {
+        if self.is_closed() {
+            1.0
+        } else {
+            3.0
+        }
+    }
+
+    fn matches_object_type(&self, object_type: &ObjectType) -> bool {
+        match *object_type {
+            ObjectType::Way => false,
+            ObjectType::Area => true,
             _ => false,
         }
     }
