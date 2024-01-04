@@ -3,11 +3,13 @@ use crate::geodata::reader::GeoEntity;
 use crate::geodata::reader::{Multipolygon, Node, OsmArea, OsmEntities, OsmEntity, Way};
 use crate::mapcss::color::{from_color_name, Color};
 use crate::mapcss::parser::*;
+use crate::mapcss::style_cache::{CacheableEntity, StyleCache};
 use indexmap::IndexMap;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Copy)]
 pub enum LineCap {
@@ -146,6 +148,8 @@ pub struct Styler {
     casing_width_multiplier: f64,
     font_size_multiplier: Option<f64>,
     rules: Vec<Rule>,
+
+    style_cache: RwLock<StyleCache>,
 }
 
 #[derive(Clone)]
@@ -251,7 +255,7 @@ impl<'a, 'wr> StyledEntities<'a, 'wr> {
 impl Styler {
     pub fn new(rules: Vec<Rule>, font_size_multiplier: Option<f64>) -> Styler {
         let canvas_fill_color = extract_canvas_fill_color(&rules);
-
+        let style_cache = StyleCache::new(&rules);
         let mut area_min_size_per_zoom = HashMap::<u8, u64>::new();
 
         (0..10).for_each(|i| {
@@ -274,6 +278,7 @@ impl Styler {
             casing_width_multiplier: 2.0,
             font_size_multiplier,
             rules,
+            style_cache: RwLock::new(style_cache),
         }
     }
 
@@ -288,27 +293,55 @@ impl Styler {
         zoom: u8,
     ) -> Vec<(&'wp A, Option<Arc<Style>>, Option<Arc<LabelStyle>>)>
     where
-        A: StyleableEntity + GeoEntity + OsmEntity<'e>,
+        A: StyleableEntity + GeoEntity + CacheableEntity + OsmEntity<'e>,
     {
-        let all_property_maps = self.get_property_maps(entity, entities, zoom);
-        let base_layer = all_property_maps
-            .iter()
-            .find(|kvp| *kvp.0 == BASE_LAYER_NAME)
-            .map(|kvp| kvp.1);
-
         let mut styles = Vec::new();
-        for (layer, prop_map) in &all_property_maps {
-            if *layer != "*" {
-                styles.push((
-                    entity,
-                    property_map_to_style(prop_map, base_layer, self.casing_width_multiplier, entity)
-                        .map(|x| Arc::new(x)),
-                    property_map_to_labelstyle(prop_map, &self.font_size_multiplier, entity).map(|x| Arc::new(x)),
-                ))
+        let _m = crate::perf_stats::measure("Style entity");
+
+        {
+            let _m = crate::perf_stats::measure("Read style cache");
+
+            let read_cache = self.style_cache.read().unwrap();
+            if let Some(styles) = read_cache.get(entity, zoom) {
+                return styles
+                    .iter()
+                    .map(|(style, labelstyle)| (entity, style.clone(), labelstyle.clone()))
+                    .collect();
             }
         }
 
+        {
+            let _m = crate::perf_stats::measure("Probe MapCSS selectors");
+
+            let all_property_maps = self.get_property_maps(entity, entities, zoom);
+            let base_layer = all_property_maps
+                .iter()
+                .find(|kvp| *kvp.0 == BASE_LAYER_NAME)
+                .map(|kvp| kvp.1);
+
+            for (layer, prop_map) in &all_property_maps {
+                if *layer != "*" {
+                    styles.push((
+                        property_map_to_style(prop_map, base_layer, self.casing_width_multiplier, entity)
+                            .map(|x| Arc::new(x)),
+                        property_map_to_labelstyle(prop_map, &self.font_size_multiplier, entity).map(|x| Arc::new(x)),
+                    ))
+                }
+            }
+        }
+
+        {
+            let _m = crate::perf_stats::measure("Write style cache");
+
+            let mut write_cache = self.style_cache.write().unwrap();
+
+            write_cache.insert(entity, zoom, styles.clone());
+        }
+
         styles
+            .iter()
+            .map(|(style, labelstyle)| (entity, style.clone(), labelstyle.clone()))
+            .collect()
     }
 
     fn get_property_maps<'r, 'e, A>(&'r self, area: &A, entities: &OsmEntities<'_>, zoom: u8) -> LayerToPropertyMap<'r>
