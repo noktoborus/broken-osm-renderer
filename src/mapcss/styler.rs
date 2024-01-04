@@ -6,7 +6,6 @@ use crate::mapcss::parser::*;
 use crate::mapcss::style_cache::{CacheableEntity, StyleCache};
 use indexmap::IndexMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -143,8 +142,6 @@ pub struct Styler {
     pub canvas_fill_color: Option<Color>,
     pub use_caps_for_dashes: bool,
 
-    area_min_size_per_zoom: HashMap<u8, u64>,
-
     casing_width_multiplier: f64,
     font_size_multiplier: Option<f64>,
     rules: Vec<Rule>,
@@ -256,23 +253,8 @@ impl Styler {
     pub fn new(rules: Vec<Rule>, font_size_multiplier: Option<f64>) -> Styler {
         let canvas_fill_color = extract_canvas_fill_color(&rules);
         let style_cache = StyleCache::new(&rules);
-        let mut area_min_size_per_zoom = HashMap::<u8, u64>::new();
-
-        (0..10).for_each(|i| {
-            area_min_size_per_zoom.insert(i, 1_000_000_000_000 / ((i + 1) as u64));
-        });
-
-        area_min_size_per_zoom.insert(11, 1_000_000_000);
-        area_min_size_per_zoom.insert(11, 500_000_000);
-        area_min_size_per_zoom.insert(12, 1_000_000);
-        area_min_size_per_zoom.insert(13, 300_000_000);
-        area_min_size_per_zoom.insert(14, 25_000 /* 25 ha */);
-        area_min_size_per_zoom.insert(15, 10_000 /* 10 ha */);
-        area_min_size_per_zoom.insert(16, 2_000 /* 2 ha  */);
-        area_min_size_per_zoom.insert(17, 100 /* 100 m² */);
 
         Styler {
-            area_min_size_per_zoom,
             use_caps_for_dashes: true,
             canvas_fill_color,
             casing_width_multiplier: 2.0,
@@ -354,7 +336,7 @@ impl Styler {
             for sel in rule
                 .selectors
                 .iter()
-                .filter(|x| entity_matches(area, entities, x, zoom, self))
+                .filter(|x| entity_matches(area, entities, x, zoom))
             {
                 let layer_id = get_layer_id(sel);
 
@@ -767,7 +749,7 @@ where
     return false;
 }
 
-fn entity_matches<'e, A>(area: &A, entities: &OsmEntities<'_>, selector: &Selector, zoom: u8, styler: &Styler) -> bool
+fn entity_matches<'e, A>(area: &A, entities: &OsmEntities<'_>, selector: &Selector, zoom: u8) -> bool
 where
     A: StyleableEntity + GeoEntity + OsmEntity<'e>,
 {
@@ -785,19 +767,6 @@ where
 
     if !area.matches_object_type(&selector.object_type) {
         return false;
-    }
-
-    match selector.object_type {
-        ObjectType::Area => {
-            if let (Some(area_square), Some(min_value)) =
-                (area.get_area_square(), styler.area_min_size_per_zoom.get(&zoom))
-            {
-                if area_square < *min_value {
-                    return false;
-                }
-            }
-        }
-        _ => {}
     }
 
     if !selector.tests.iter().all(|x| matches_by_tags(area, x)) {
