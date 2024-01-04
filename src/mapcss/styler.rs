@@ -154,6 +154,16 @@ where
     Multipolygon(&'wr Multipolygon<'a>),
 }
 
+impl<'a, 'wr> std::fmt::Debug for OsmEntityType<'a, 'wr> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OsmEntityType::Node(n) => write!(f, "node/{}", n.global_id()),
+            OsmEntityType::Way(w) => write!(f, "way/{}", w.global_id()),
+            OsmEntityType::Multipolygon(mp) => write!(f, "relation/{}", mp.global_id()),
+        }
+    }
+}
+
 pub trait TileRelative {
     fn get_points(&self) -> Vec<Point>;
     fn get_relation(&self) -> Vec<Vec<Point>>;
