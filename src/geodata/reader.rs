@@ -198,7 +198,7 @@ impl<'a> GeodataReader<'a> {
 
     fn get_way(&'a self, idx: usize) -> Way<'a> {
         let bytes = self.storages().way_storage.get_object(idx);
-        let node_ids_start_pos = mem::size_of::<u64>();
+        let node_ids_start_pos = mem::size_of::<u64>() + mem::size_of::<u64>();
         let node_ids = self.get_ints_by_ref(&bytes[node_ids_start_pos..]);
         Way {
             entity: BaseOsmEntity { bytes, reader: self },
@@ -208,8 +208,12 @@ impl<'a> GeodataReader<'a> {
 
     fn get_polygon(&'a self, idx: usize) -> Polygon<'a> {
         let bytes = self.storages().polygon_storage.get_object(idx);
-        let node_ids = self.get_ints_by_ref(bytes);
-        Polygon { reader: self, node_ids }
+        let node_ids_start_pos = mem::size_of::<u64>();
+        let node_ids = self.get_ints_by_ref(&bytes[node_ids_start_pos..]);
+        Polygon {
+            entity: BaseOsmEntity { bytes, reader: self },
+            node_ids,
+        }
     }
 
     fn get_multipolygon(&'a self, idx: usize) -> Multipolygon<'a> {
@@ -308,8 +312,9 @@ struct ObjectStorages<'a> {
 
 const INT_REF_SIZE: usize = 2 * mem::size_of::<u32>();
 const NODE_SIZE: usize = mem::size_of::<u64>() + 2 * mem::size_of::<f64>() + INT_REF_SIZE;
-const POLYGON_SIZE: usize = INT_REF_SIZE;
-const WAY_OR_MULTIPOLYGON_SIZE: usize = mem::size_of::<u64>() + 2 * INT_REF_SIZE;
+const POLYGON_SIZE: usize = mem::size_of::<u64>() + INT_REF_SIZE;
+const WAY_SIZE: usize = mem::size_of::<u64>() + mem::size_of::<u64>() + 2 * INT_REF_SIZE;
+const MULTIPOLYGON_SIZE: usize = mem::size_of::<u64>() + 2 * INT_REF_SIZE;
 const TILE_SIZE: usize = 2 * mem::size_of::<u32>() + 3 * INT_REF_SIZE;
 
 impl<'a> ObjectStorages<'a> {
@@ -318,9 +323,9 @@ impl<'a> ObjectStorages<'a> {
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
     fn from_bytes(bytes: &[u8]) -> ObjectStorages<'_> {
         let (node_storage, rest) = ObjectStorage::from_bytes(bytes, NODE_SIZE);
-        let (way_storage, rest) = ObjectStorage::from_bytes(rest, WAY_OR_MULTIPOLYGON_SIZE);
+        let (way_storage, rest) = ObjectStorage::from_bytes(rest, WAY_SIZE);
         let (polygon_storage, rest) = ObjectStorage::from_bytes(rest, POLYGON_SIZE);
-        let (multipolygon_storage, rest) = ObjectStorage::from_bytes(rest, WAY_OR_MULTIPOLYGON_SIZE);
+        let (multipolygon_storage, rest) = ObjectStorage::from_bytes(rest, MULTIPOLYGON_SIZE);
         let (tile_storage, rest) = ObjectStorage::from_bytes(rest, TILE_SIZE);
 
         let int_count = LittleEndian::read_u32(rest) as usize;
@@ -465,6 +470,11 @@ pub struct Node<'a> {
 
 implement_osm_entity!(Node<'a>, Node);
 
+pub trait GeoEntity {
+    /// Get area in m2
+    fn get_area_square(&self) -> Option<u64>;
+}
+
 impl<'a> Coords for Node<'a> {
     fn lat(&self) -> f64 {
         let start_pos = mem::size_of::<u64>();
@@ -474,6 +484,12 @@ impl<'a> Coords for Node<'a> {
     fn lon(&self) -> f64 {
         let start_pos = mem::size_of::<u64>() + mem::size_of::<f64>();
         LittleEndian::read_f64(&self.entity.bytes[start_pos..])
+    }
+}
+
+impl<'a> GeoEntity for Node<'a> {
+    fn get_area_square(&self) -> Option<u64> {
+        None
     }
 }
 
@@ -506,8 +522,15 @@ impl<'a> OsmArea for Way<'a> {
     }
 }
 
+impl<'a> GeoEntity for Way<'a> {
+    fn get_area_square(&self) -> Option<u64> {
+        let start_pos = mem::size_of::<u64>(); // skip global id
+        Some(LittleEndian::read_u64(&self.entity.bytes[start_pos..]))
+    }
+}
+
 pub struct Polygon<'a> {
-    reader: &'a GeodataReader<'a>,
+    entity: BaseOsmEntity<'a>,
     node_ids: &'a [u32],
 }
 
@@ -518,7 +541,13 @@ impl<'a> Polygon<'a> {
 
     pub fn get_node(&self, idx: usize) -> Node<'a> {
         let node_id = self.node_ids[idx];
-        self.reader.get_node(node_id as usize)
+        self.entity.reader.get_node(node_id as usize)
+    }
+}
+
+impl<'a> GeoEntity for Polygon<'a> {
+    fn get_area_square(&self) -> Option<u64> {
+        Some(LittleEndian::read_u64(self.entity.bytes))
     }
 }
 
@@ -543,5 +572,19 @@ impl<'a> Multipolygon<'a> {
 impl<'a> OsmArea for Multipolygon<'a> {
     fn is_closed(&self) -> bool {
         true
+    }
+}
+
+impl<'a> GeoEntity for Multipolygon<'a> {
+    fn get_area_square(&self) -> Option<u64> {
+        if self.polygon_count() > 0 {
+            let sum = (0..self.polygon_count())
+                .flat_map(|poly_idx| self.get_polygon(poly_idx).get_area_square().map(|x| x))
+                .sum::<u64>();
+
+            Some(sum)
+        } else {
+            None
+        }
     }
 }

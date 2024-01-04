@@ -4,6 +4,7 @@ use crate::geodata::saver::save_to_internal_format;
 use crate::mapcss::filterer::Filterer;
 use crate::mapcss::parser::ObjectType;
 use anyhow::{anyhow, bail, Context, Result};
+use geographiclib_rs::{Geodesic, PolygonArea, Winding};
 #[cfg(feature = "pbf")]
 use osmpbf::{Element, ElementReader, RelMemberType};
 use quick_xml::events::attributes::Attributes;
@@ -472,11 +473,13 @@ pub(super) struct IndexedNode<'a> {
 }
 
 pub(super) struct IndexedWay<'a> {
+    pub(super) area_m: f64,
     pub(super) way: &'a ParsedWay,
     pub(super) nodes_ref: Vec<LocalRef>,
 }
 
 pub(super) struct IndexedPolygon {
+    pub(super) area_m: f64,
     pub(super) nodes_ref: Vec<LocalRef>,
 }
 
@@ -553,6 +556,7 @@ impl<'a> Indexed<'a> {
                 continue;
             }
             let mut way_ref = IndexedWay {
+                area_m: parsed.measure_polygon(&&way.nodes_ref),
                 way,
                 nodes_ref: Vec::new(),
             };
@@ -573,7 +577,9 @@ impl<'a> Indexed<'a> {
             None => {
                 let polygon = parsed.polygons.get(polygon_id).unwrap();
                 let local_id = self.polygons.len();
+                let area_m = parsed.measure_polygon(&polygon.nodes);
                 let indexed_poly = IndexedPolygon {
+                    area_m,
                     nodes_ref: polygon
                         .nodes
                         .iter()
@@ -630,6 +636,8 @@ impl<'a> Indexed<'a> {
 }
 
 pub(super) struct Parsed {
+    geodesic: Geodesic,
+
     pub(super) nodes: HashMap<OsmRef, ParsedNode>,
     pub(super) ways: HashMap<OsmRef, ParsedWay>,
     pub(super) relations: HashMap<OsmRef, ParsedRelation>,
@@ -655,6 +663,8 @@ pub(super) struct Parsed {
 impl Parsed {
     pub(super) fn new() -> Parsed {
         Parsed {
+            geodesic: Geodesic::wgs84(),
+
             nodes: HashMap::new(),
             ways: HashMap::new(),
             relations: HashMap::new(),
@@ -914,5 +924,30 @@ impl Parsed {
         }
 
         (outer_ways, inner_ways)
+    }
+
+    pub(super) fn get_nodes_by_refs(&self, nodes_ref: Vec<OsmRef>) -> Vec<&ParsedNode> {
+        nodes_ref
+            .iter()
+            .map(|node_ref| self.nodes.get(&node_ref))
+            .filter(|parsed_node| parsed_node.is_some())
+            .map(|parsed_node| parsed_node.unwrap())
+            .collect()
+    }
+
+    /// Get area of polygon.
+    pub(super) fn measure_polygon(&self, nodes_ref: &Vec<OsmRef>) -> f64 {
+        let mut pacc = PolygonArea::new(&self.geodesic, Winding::CounterClockwise);
+        let mut pac = PolygonArea::new(&self.geodesic, Winding::Clockwise);
+
+        self.get_nodes_by_refs(nodes_ref.to_vec()).iter().for_each(|node| {
+            pac.add_point(node.lat, node.lon);
+            pacc.add_point(node.lat, node.lon);
+        });
+
+        let (_, c_area_m, _) = pac.compute(false);
+        let (_, cc_area_m, _) = pacc.compute(false);
+
+        c_area_m.min(cc_area_m)
     }
 }

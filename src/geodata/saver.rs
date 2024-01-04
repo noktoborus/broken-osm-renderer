@@ -1,6 +1,4 @@
 use crate::geodata::importer::{Indexed, IndexedNode, IndexedPolygon, IndexedRelation, IndexedWay, ParsedNode};
-#[cfg(test)]
-use crate::geodata::importer::{OsmRef, Parsed};
 use crate::tile::tile;
 use anyhow::{bail, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -72,6 +70,7 @@ fn save_ways(writer: &mut dyn Write, indexes: &[IndexedWay], data: &mut Buffered
     writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
     for way_ref in indexes {
         writer.write_u64::<LittleEndian>(way_ref.way.id)?;
+        writer.write_u64::<LittleEndian>(way_ref.area_m as u64)?;
         save_refs(writer, way_ref.nodes_ref.iter(), data)?;
         save_tags(writer, &way_ref.way.tags, data)?;
         tags_counter += way_ref.way.tags.len();
@@ -85,6 +84,7 @@ fn save_ways(writer: &mut dyn Write, indexes: &[IndexedWay], data: &mut Buffered
 fn save_polygons(writer: &mut dyn Write, indexes: &[IndexedPolygon], data: &mut BufferedData) -> Result<()> {
     writer.write_u32::<LittleEndian>(to_u32_safe(indexes.len())?)?;
     for polygon in indexes {
+        writer.write_u64::<LittleEndian>(polygon.area_m as u64)?;
         save_refs(writer, polygon.nodes_ref.iter(), data)?;
     }
     println!("writed {} polygons", indexes.len());
@@ -247,4 +247,3 @@ fn to_u32_safe(num: usize) -> Result<u32> {
     }
     Ok(num as u32)
 }
-

@@ -15,6 +15,7 @@ quick-xml = "*"
 stb_truetype = "*"
 tini = "*"
 rusqlite = { version = "*", features = ["bundled"] }
+geographiclib-rs = "0.2.3"
 
 [dependencies.osmpbf]
 version = "*"
