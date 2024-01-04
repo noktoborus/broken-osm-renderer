@@ -1,8 +1,16 @@
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+use std::fmt::Debug;
+
+#[derive(Clone, Eq, PartialEq, Hash, Copy)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+impl Debug for Color {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{:x}{:x}{:x}", self.r, self.g, self.b)
+    }
 }
 
 pub fn from_color_name(name: &str) -> Option<Color> {
