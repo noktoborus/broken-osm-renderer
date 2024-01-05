@@ -4,7 +4,7 @@ pub struct Measurer;
 
 impl PerfStats {
     pub fn new() -> PerfStats {
-        PerfStats{}
+        PerfStats {}
     }
 
     pub fn to_html(&self) -> String {

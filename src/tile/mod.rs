@@ -1,2 +1,2 @@
-pub mod tile;
 pub mod mbtiles;
+pub mod tile;

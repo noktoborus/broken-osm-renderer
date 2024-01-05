@@ -68,7 +68,10 @@ fn main() {
         let config_path = PathBuf::from(&args[3]);
         filterer = load_filter(&config_path).ok();
 
-        filterer.as_ref().expect("Filed to load mapcss filters").dump_selectors();
+        filterer
+            .as_ref()
+            .expect("Filed to load mapcss filters")
+            .dump_selectors();
     }
 
     let mut tmp_output = output.clone();

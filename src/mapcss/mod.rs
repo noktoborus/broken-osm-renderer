@@ -1,9 +1,9 @@
 pub mod color;
+pub mod filterer;
 pub mod parser;
 mod style_cache;
 pub mod styler;
 pub mod token;
-pub mod filterer;
 
 use crate::mapcss::token::InputPosition;
 use std::error::Error;
