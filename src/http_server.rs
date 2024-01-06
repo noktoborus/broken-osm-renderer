@@ -5,20 +5,17 @@ use crate::mapcss::parser::parse_file;
 use crate::mapcss::styler::StyledEntities;
 use crate::mapcss::styler::Styler;
 use crate::perf_stats::PerfStats;
-use crate::tile::mbtiles::MBTiles;
 use crate::tile::tile::{Tile, MAX_ZOOM};
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::RwLock;
 use std::thread;
 
 enum HandlerMessage {
@@ -36,7 +33,6 @@ pub fn run_server(
     address: &str,
     geodata_file: &str,
     stylesheet_file: &str,
-    cache_file: &str,
     font_size_multiplier: Option<f64>,
     osm_ids: Option<HashSet<u64>>,
 ) -> Result<()> {
@@ -49,8 +45,6 @@ pub fn run_server(
         drawer: Drawer::new(&base_path),
         osm_ids,
         perf_stats: Mutex::new(PerfStats::new()),
-        cache_file: cache_file.to_owned(),
-        cache: RwLock::new(HashMap::new()),
     });
 
     let thread_count =
@@ -127,8 +121,6 @@ struct HttpServer<'a> {
     drawer: Drawer,
     osm_ids: Option<HashSet<u64>>,
     perf_stats: Mutex<PerfStats>,
-    cache_file: String,
-    cache: RwLock<HashMap<usize, Mutex<MBTiles>>>,
 }
 
 impl<'a> HttpServer<'a> {
@@ -164,60 +156,6 @@ impl<'a> HttpServer<'a> {
         return Ok(tile_png_bytes);
     }
 
-    fn open_cache(&self, scale: &usize) -> Result<MBTiles, ()> {
-        let path = Path::new(&self.cache_file);
-        let path_with_scale = &format!(
-            "{}{}.{}",
-            path.file_stem().unwrap().to_str().unwrap(),
-            format!("x{}", scale),
-            path.extension().unwrap().to_str().unwrap()
-        );
-        let cache_path = &Path::new(path_with_scale);
-
-        match MBTiles::new(cache_path) {
-            Ok(cache) => {
-                println!("Open cache file: {}", cache_path.display());
-                Ok(cache)
-            }
-            _ => {
-                println!(
-                    "failed to open cache file: {}, use in-memory cache",
-                    cache_path.display()
-                );
-                MBTiles::new_in_memory()
-            }
-        }
-    }
-
-    fn cached_tile(&self, tile: &RequestTile, state: &mut HandlerState) -> Result<Vec<u8>> {
-        if let Some(unlocked_cache) = self.cache.read().unwrap().get(&tile.scale) {
-            if let Some(tile_bytes) = unlocked_cache
-                .lock()
-                .unwrap()
-                .get(tile.tile.zoom, tile.tile.x, tile.tile.y)
-            {
-                return Ok(tile_bytes);
-            }
-
-            {
-                let tile_bytes = self.draw_tile(tile, state)?;
-                let write_cache = unlocked_cache.lock().unwrap();
-                let _m = crate::perf_stats::measure("Store tile to cache");
-
-                write_cache.set(tile.tile.zoom, tile.tile.x, tile.tile.y, &tile_bytes);
-
-                return Ok(tile_bytes);
-            }
-        }
-
-        if let Ok(new_cache) = self.open_cache(&tile.scale) {
-            self.cache.write().unwrap().insert(tile.scale, Mutex::new(new_cache));
-            return self.cached_tile(tile, state);
-        }
-
-        return self.draw_tile(tile, state);
-    }
-
     fn handle_connection(&self, path: &str, mut stream: TcpStream, state: &mut HandlerState) {
         match self.try_handle_connection(path, &mut stream, state) {
             Ok(_) => {}
@@ -241,7 +179,7 @@ impl<'a> HttpServer<'a> {
             crate::perf_stats::start_tile(tile.tile.zoom);
         }
 
-        let tile_png_bytes = self.cached_tile(&tile, state)?;
+        let tile_png_bytes = self.draw_tile(&tile, state)?;
 
         if cfg!(feature = "perf-stats") {
             crate::perf_stats::finish_tile(&mut self.perf_stats.lock().unwrap());
