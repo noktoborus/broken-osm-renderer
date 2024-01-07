@@ -3,9 +3,8 @@ use crate::geodata::reader::{Multipolygon, Node, OsmArea, Way};
 use crate::mapcss::parser::Rule;
 use crate::mapcss::parser::Test;
 use crate::mapcss::parser::UnaryTestType;
-use crate::mapcss::styler::{LabelStyle, Style};
+use crate::mapcss::styler::{LabelStyleValue, StyleValue};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Hash, Eq, PartialEq)]
 struct StyleCacheKey {
@@ -15,7 +14,7 @@ struct StyleCacheKey {
 }
 
 pub struct StyleCache {
-    cache: HashMap<StyleCacheKey, Vec<(Option<Arc<Style>>, Option<Arc<LabelStyle>>)>>,
+    cache: HashMap<StyleCacheKey, Vec<(StyleValue, LabelStyleValue)>>,
     tag_value_matters: HashMap<String, bool>,
 }
 
@@ -51,14 +50,14 @@ impl StyleCache {
         }
     }
 
-    pub fn get<'e, E>(&self, entity: &E, zoom: u8) -> Option<Vec<(Option<Arc<Style>>, Option<Arc<LabelStyle>>)>>
+    pub fn get<'e, E>(&self, entity: &E, zoom: u8) -> Option<Vec<(StyleValue, LabelStyleValue)>>
     where
         E: CacheableEntity + OsmEntity<'e>,
     {
         self.cache.get(&self.to_cache_key(entity, zoom)).cloned()
     }
 
-    pub fn insert<'e, E>(&mut self, entity: &E, zoom: u8, styles: Vec<(Option<Arc<Style>>, Option<Arc<LabelStyle>>)>)
+    pub fn insert<'e, E>(&mut self, entity: &E, zoom: u8, styles: Vec<(StyleValue, LabelStyleValue)>)
     where
         E: CacheableEntity + OsmEntity<'e>,
     {

@@ -11,7 +11,7 @@ pub struct Labeler {
 }
 
 impl Labeler {
-    pub fn label_entity<'e, E>(
+    pub fn label_entity<E>(
         &self,
         entity: &E,
         style: &LabelStyle,
@@ -62,7 +62,7 @@ impl Labeler {
         }
     }
 
-    fn label_with_text<'e, E>(
+    fn label_with_text<E>(
         &self,
         entity: &E,
         style: &LabelStyle,

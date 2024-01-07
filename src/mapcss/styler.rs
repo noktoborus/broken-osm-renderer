@@ -138,6 +138,9 @@ impl Display for Style {
     }
 }
 
+pub type StyleValue = Option<Arc<Style>>;
+pub type LabelStyleValue = Option<Arc<LabelStyle>>;
+
 pub struct Styler {
     pub canvas_fill_color: Option<Color>,
     pub use_caps_for_dashes: bool,
@@ -188,12 +191,12 @@ impl<'a, 'wr> StyledEntities<'a, 'wr> {
 
         {
             let _m = crate::perf_stats::measure("Style ways");
-            let mut iter = entities
+            let iter = entities
                 .ways
                 .iter()
                 .flat_map(|way| styler.style_entity(way, entities, zoom));
 
-            while let Some((element, style, labelstyle)) = iter.next() {
+            for (element, style, labelstyle) in iter {
                 if let Some(labelstyle) = labelstyle {
                     labeled.push((OsmEntityType::Way(element), labelstyle));
                 }
@@ -205,12 +208,12 @@ impl<'a, 'wr> StyledEntities<'a, 'wr> {
 
         {
             let _m = crate::perf_stats::measure("Style multipolygons");
-            let mut iter = entities
+            let iter = entities
                 .multipolygons
                 .iter()
                 .flat_map(|multipolygon| styler.style_entity(multipolygon, entities, zoom));
 
-            while let Some((element, style, labelstyle)) = iter.next() {
+            for (element, style, labelstyle) in iter {
                 if let Some(labelstyle) = labelstyle {
                     labeled.push((OsmEntityType::Multipolygon(element), labelstyle));
                 }
@@ -222,7 +225,7 @@ impl<'a, 'wr> StyledEntities<'a, 'wr> {
 
         {
             let _m = crate::perf_stats::measure("Sorting styled areas");
-            styled.sort_by(|(_, a), (_, b)| compare_styled_entities(&a, &b));
+            styled.sort_by(|(_, a), (_, b)| compare_styled_entities(a, b));
         }
 
         {
@@ -238,7 +241,7 @@ impl<'a, 'wr> StyledEntities<'a, 'wr> {
 
         {
             let _m = crate::perf_stats::measure("Sorting labels");
-            labeled.sort_by(|(_, a), (_, b)| compare_styled_entities_labels(&a, &b));
+            labeled.sort_by(|(_, a), (_, b)| compare_styled_entities_labels(a, b));
         }
 
         Self { styled, labeled }
@@ -273,7 +276,7 @@ impl Styler {
         entity: &'wp A,
         entities: &OsmEntities<'_>,
         zoom: u8,
-    ) -> Vec<(&'wp A, Option<Arc<Style>>, Option<Arc<LabelStyle>>)>
+    ) -> Vec<(&'wp A, StyleValue, LabelStyleValue)>
     where
         A: StyleableEntity + GeoEntity + CacheableEntity + OsmEntity<'e>,
     {
@@ -304,9 +307,8 @@ impl Styler {
             for (layer, prop_map) in &all_property_maps {
                 if *layer != "*" {
                     styles.push((
-                        property_map_to_style(prop_map, base_layer, self.casing_width_multiplier, entity)
-                            .map(|x| Arc::new(x)),
-                        property_map_to_labelstyle(prop_map, &self.font_size_multiplier, entity).map(|x| Arc::new(x)),
+                        property_map_to_style(prop_map, base_layer, self.casing_width_multiplier, entity).map(Arc::new),
+                        property_map_to_labelstyle(prop_map, &self.font_size_multiplier, entity).map(Arc::new),
                     ))
                 }
             }
@@ -370,7 +372,6 @@ impl Styler {
     }
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp))]
 fn compare_styled_entities(a_style: &Arc<Style>, b_style: &Arc<Style>) -> Ordering {
     let (a_layer, b_layer) = (a_style.layer, b_style.layer);
 
@@ -389,7 +390,6 @@ fn compare_styled_entities(a_style: &Arc<Style>, b_style: &Arc<Style>) -> Orderi
     a_style.rule_id.cmp(&b_style.rule_id)
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp))]
 fn compare_styled_entities_labels(a_labelstyle: &Arc<LabelStyle>, b_labelstyle: &Arc<LabelStyle>) -> Ordering {
     a_labelstyle.rule_id.cmp(&b_labelstyle.rule_id)
 }
@@ -421,7 +421,7 @@ where
     let get_rule_id = |prop_name| current_layer_map.get(prop_name).map(|(rule_id, _)| *rule_id);
 
     let get_color = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
-        Some(&PropertyValue::Color(color)) => Some(color.clone()),
+        Some(&PropertyValue::Color(color)) => Some(*color),
         Some(&PropertyValue::Identifier(id)) => {
             let color = from_color_name(id.as_str());
             if color.is_none() {
@@ -513,20 +513,16 @@ where
     let fill_image = get_string("fill-image");
 
     if color.is_some() || fill_color.is_some() || casing_color.is_some() || fill_image.is_some() {
-        let rule_id = [
+        let rules_ids = [
             get_rule_id("color"),
             get_rule_id("fill-color"),
             get_rule_id("casing-color"),
             get_rule_id("fill-image"),
-        ]
-        .iter()
-        .filter(|x| x.is_some())
-        .map(|x| x.unwrap())
-        .max()
-        .unwrap();
+        ];
+        let rule_id = rules_ids.iter().filter(|x| x.is_some()).flatten().max().unwrap();
 
         Some(Style {
-            rule_id,
+            rule_id: *rule_id,
 
             layer,
             z_index,
@@ -577,7 +573,7 @@ where
     let get_rule_id = |prop_name| current_layer_map.get(prop_name).map(|(rule_id, _)| *rule_id);
 
     let get_color = |prop_name| match current_layer_map.get(prop_name).map(|(_, prop)| prop) {
-        Some(&PropertyValue::Color(color)) => Some(color.clone()),
+        Some(&PropertyValue::Color(color)) => Some(*color),
         Some(&PropertyValue::Identifier(id)) => {
             let color = from_color_name(id.as_str());
             if color.is_none() {
@@ -639,15 +635,11 @@ where
     };
 
     if icon_image.is_some() || text_style.is_some() {
-        let rule_id = [get_rule_id("icon-image"), get_rule_id("text")]
-            .iter()
-            .filter(|x| x.is_some())
-            .map(|x| x.unwrap())
-            .max()
-            .unwrap();
+        let rules_ids = [get_rule_id("icon-image"), get_rule_id("text")];
+        let rule_id = rules_ids.iter().filter(|x| x.is_some()).flatten().max().unwrap();
 
         Some(LabelStyle {
-            rule_id,
+            rule_id: *rule_id,
             text_style,
             icon_image,
         })
@@ -662,7 +654,7 @@ fn extract_canvas_fill_color(rules: &[Rule]) -> Option<Color> {
             if let ObjectType::Canvas = selector.object_type {
                 for prop in r.properties.iter().filter(|x| x.name == "fill-color") {
                     if let PropertyValue::Color(ref color) = prop.value {
-                        return Some(color.clone());
+                        return Some(*color);
                     }
                 }
             }
@@ -735,10 +727,10 @@ where
             .filter(|x| x.matches_object_type(&parent_selector.object_type))
         {
             for i in 0..way.node_count() {
-                if way.get_node(i).global_id() == my_node_id {
-                    if parent_selector.tests.iter().all(|test| matches_by_tags(way, test)) {
-                        return true;
-                    }
+                if way.get_node(i).global_id() == my_node_id
+                    && parent_selector.tests.iter().all(|test| matches_by_tags(way, test))
+                {
+                    return true;
                 }
             }
         }
@@ -746,7 +738,7 @@ where
     } else if entity.is_way() {
         // TODO: matches to relations
     }
-    return false;
+    false
 }
 
 fn entity_matches<'e, A>(area: &A, entities: &OsmEntities<'_>, selector: &Selector, zoom: u8) -> bool

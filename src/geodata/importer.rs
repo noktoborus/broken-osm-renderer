@@ -404,7 +404,7 @@ impl ParsedWay {
             }
         }
 
-        return refs_without_duplicates;
+        refs_without_duplicates
     }
 }
 
@@ -531,13 +531,7 @@ impl<'a> Indexed<'a> {
     pub(self) fn ensure_node_ref(&mut self, osm_node_id: OsmRef, parsed: &'a Parsed) -> Option<LocalRef> {
         match self.nodes_ref.get(&osm_node_id) {
             Some(local_id) => Some(*local_id),
-            None => {
-                if let Some(node) = parsed.nodes.get(&osm_node_id) {
-                    Some(self.add_node_ref(node))
-                } else {
-                    None
-                }
-            }
+            None => parsed.nodes.get(&osm_node_id).map(|node| self.add_node_ref(node)),
         }
     }
 
@@ -556,7 +550,7 @@ impl<'a> Indexed<'a> {
                 continue;
             }
             let mut way_ref = IndexedWay {
-                area_m: parsed.measure_polygon(&&way.nodes_ref),
+                area_m: parsed.measure_polygon(&way.nodes_ref),
                 way,
                 nodes_ref: Vec::new(),
             };
@@ -572,7 +566,7 @@ impl<'a> Indexed<'a> {
     }
 
     pub(self) fn ensure_polygon(&mut self, polygon_id: &ParsedPolygonId, parsed: &'a Parsed) -> LocalRef {
-        match self.polygons_ref.get(&polygon_id) {
+        match self.polygons_ref.get(polygon_id) {
             Some(local_id) => *local_id,
             None => {
                 let polygon = parsed.polygons.get(polygon_id).unwrap();
@@ -716,7 +710,7 @@ impl Parsed {
 
     pub(super) fn add_way(&mut self, way: ParsedWay, filterer: Option<&Filterer>) {
         let mut add_way_simple = |way: ParsedWay| {
-            if way.nodes_ref.len() == 0 {
+            if way.nodes_ref.is_empty() {
                 self.count_norefs_ways += 1;
             }
 
@@ -734,7 +728,7 @@ impl Parsed {
             }
         };
 
-        if way.tags.len() == 0 {
+        if way.tags.is_empty() {
             self.count_notag_ways += 1;
         } else if filterer.is_some() {
             let filtered_tags = filterer
@@ -745,7 +739,7 @@ impl Parsed {
                 let mut filtered_way = ParsedWay::new(way.id);
                 filtered_way.nodes_ref = way.nodes_ref.clone();
 
-                if filtered_tags.len() == 0 {
+                if filtered_tags.is_empty() {
                     self.count_filtered_ways += 1;
                 } else {
                     self.count_filtered_tags += way.tags.len() - filtered_tags.len();
@@ -798,7 +792,7 @@ impl Parsed {
     }
 
     pub(super) fn add_relation(&mut self, relation: ParsedRelation, filterer: Option<&Filterer>) {
-        if relation.tags.len() == 0 {
+        if relation.tags.is_empty() {
             self.count_notag_relations += 1;
             return;
         }
@@ -809,8 +803,8 @@ impl Parsed {
             return;
         }
 
-        if filterer.is_some() {
-            let filtered_tags = filterer.unwrap().filter_tags(vec![ObjectType::Area], &relation.tags);
+        if let Some(filterer) = filterer {
+            let filtered_tags = filterer.filter_tags(vec![ObjectType::Area], &relation.tags);
 
             if filtered_tags.is_empty() {
                 self.count_filtered_relations += 1;
@@ -929,14 +923,14 @@ impl Parsed {
     pub(super) fn get_nodes_by_refs(&self, nodes_ref: Vec<OsmRef>) -> Vec<&ParsedNode> {
         nodes_ref
             .iter()
-            .map(|node_ref| self.nodes.get(&node_ref))
+            .map(|node_ref| self.nodes.get(node_ref))
             .filter(|parsed_node| parsed_node.is_some())
-            .map(|parsed_node| parsed_node.unwrap())
+            .flatten()
             .collect()
     }
 
     /// Get area of polygon.
-    pub(super) fn measure_polygon(&self, nodes_ref: &Vec<OsmRef>) -> f64 {
+    pub(super) fn measure_polygon(&self, nodes_ref: &[OsmRef]) -> f64 {
         let mut pacc = PolygonArea::new(&self.geodesic, Winding::CounterClockwise);
         let mut pac = PolygonArea::new(&self.geodesic, Winding::Clockwise);
 

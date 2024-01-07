@@ -541,7 +541,7 @@ impl<'a> Parser<'a> {
             Token::String(s) => PropertyValue::String(String::from(s)),
             Token::Color(color) => PropertyValue::Color(color),
             Token::ColorRef(color_name) => match self.color_defs.get(color_name) {
-                Some(color) => PropertyValue::Color(color.clone()),
+                Some(color) => PropertyValue::Color(*color),
                 None => {
                     return Err(self.parse_error(
                         format!("Unknown color reference: {}", color_name),

@@ -20,7 +20,7 @@ impl Rasterizer {
     pub fn new(color: &Color) -> Rasterizer {
         Rasterizer {
             stripes: Stripes::default(),
-            color: color.clone(),
+            color: *color,
         }
     }
 

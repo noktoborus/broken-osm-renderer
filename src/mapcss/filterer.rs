@@ -83,11 +83,8 @@ impl Filterer {
                 selectors.push(sel);
             }
             for propval in rule.properties.iter().map(|prop| &prop.value) {
-                match *propval {
-                    PropertyValue::Identifier(ref id) => {
-                        properties.push(id.to_string());
-                    }
-                    _ => {}
+                if let PropertyValue::Identifier(ref id) = *propval {
+                    properties.push(id.to_string());
                 }
             }
 
@@ -141,11 +138,9 @@ impl Filterer {
             }
 
             for (k, v) in filter_selected {
-                if !filtered.contains_key(&k) {
-                    filtered.insert(k, v);
-                }
+                filtered.entry(k).or_insert(v);
             }
         }
-        return filtered;
+        filtered
     }
 }

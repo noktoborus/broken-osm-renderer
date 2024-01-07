@@ -57,7 +57,7 @@ fn draw_line(edge_idx: usize, p1: &Point, p2: &Point, y_to_edges: &mut EdgesByY,
     let sy = get_dir(p1.y, p2.y);
 
     let mut err = dx + dy;
-    let mut cur_point = p1.clone();
+    let mut cur_point = *p1;
 
     loop {
         let is_start = cur_point == *p1;

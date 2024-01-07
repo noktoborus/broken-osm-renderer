@@ -19,7 +19,7 @@ impl Default for TextPlacer {
 }
 
 impl TextPlacer {
-    pub fn place<'e, E>(
+    pub fn place<E>(
         &self,
         on: &E,
         text_style: &TextStyle,

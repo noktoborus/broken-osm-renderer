@@ -153,7 +153,7 @@ impl<'a> HttpServer<'a> {
             )
             .unwrap();
 
-        return Ok(tile_png_bytes);
+        Ok(tile_png_bytes)
     }
 
     fn handle_connection(&self, path: &str, mut stream: TcpStream, state: &mut HandlerState) {

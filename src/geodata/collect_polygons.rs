@@ -61,22 +61,22 @@ impl Polygon {
         } else if way.is_begin(&self.last) {
             self.last = way.last.clone();
             for i in 1..way.nodes.len() {
-                self.nodes.push(way.nodes[i].clone())
+                self.nodes.push(way.nodes[i])
             }
         } else if way.is_end(&self.first) {
             self.first = way.first.clone();
             for i in (0..way.nodes.len() - 1).rev() {
-                self.nodes.insert(0, way.nodes[i].clone())
+                self.nodes.insert(0, way.nodes[i])
             }
         } else if way.is_begin(&self.first) {
             self.first = way.last.clone();
             for i in 1..way.nodes.len() {
-                self.nodes.insert(0, way.nodes[i].clone())
+                self.nodes.insert(0, way.nodes[i])
             }
         } else if way.is_end(&self.last) {
             self.last = way.first.clone();
             for i in (0..(way.nodes.len() - 1)).rev() {
-                self.nodes.push(way.nodes[i].clone())
+                self.nodes.push(way.nodes[i])
             }
         } else {
             return false;
@@ -129,9 +129,7 @@ impl Polygon {
     fn feed_with_ways(&mut self, mut ways: Vec<Way>) -> Vec<Way> {
         let mut remaining_ways = Vec::new();
 
-        while !ways.is_empty() {
-            let way = ways.pop().unwrap();
-
+        while let Some(way) = ways.pop() {
             if self.is_closed() || !self.assimilate_way(&way) {
                 remaining_ways.push(way);
             }
@@ -143,9 +141,7 @@ impl Polygon {
     fn feed_with_polygons(&mut self, mut polygons: Vec<Polygon>) -> Vec<Polygon> {
         let mut remaining_polygons = Vec::new();
 
-        while !polygons.is_empty() {
-            let poly = polygons.pop().unwrap();
-
+        while let Some(poly) = polygons.pop() {
             if self.is_closed() || !self.assimilate_polygon(&poly) {
                 remaining_polygons.push(poly);
             }
@@ -181,13 +177,12 @@ pub(crate) fn ways_to_polygons(mut ways: Vec<Way>) -> Vec<Polygon> {
     if unfinished_polygons.len() == 1 {
         let mut poly = unfinished_polygons.pop().unwrap();
 
-        poly.nodes.push(poly.nodes.first().unwrap().clone());
+        poly.nodes.push(*poly.nodes.first().unwrap());
         finished_polygons.push(poly);
     }
 
     let mut orphans_polygons = Vec::new();
-    while !unfinished_polygons.is_empty() {
-        let mut poly = unfinished_polygons.pop().unwrap();
+    while let Some(mut poly) = unfinished_polygons.pop() {
         unfinished_polygons = poly.feed_with_polygons(unfinished_polygons.clone());
 
         if poly.is_closed() {
@@ -205,7 +200,7 @@ pub(crate) fn ways_to_polygons(mut ways: Vec<Way>) -> Vec<Polygon> {
         }
 
         if !poly.is_closed() {
-            poly.nodes.push(poly.nodes.first().unwrap().clone());
+            poly.nodes.push(*poly.nodes.first().unwrap());
             finished_polygons.push(poly);
         }
     }

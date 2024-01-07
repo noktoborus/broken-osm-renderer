@@ -97,7 +97,7 @@ impl Drawer {
 
         {
             let _m = crate::perf_stats::measure("Draw labels");
-            self.draw_labels(pixels, &styled_entities, scale, tile);
+            self.draw_labels(pixels, styled_entities, scale, tile);
         }
 
         {
@@ -116,7 +116,7 @@ impl Drawer {
             let _m = crate::perf_stats::measure("Label areas");
             for (entity, labelstyle) in &styled_entities.labeled {
                 self.labeler
-                    .label_entity(&entity.get_tiled(tile), &labelstyle, scale, &self.icon_cache, pixels);
+                    .label_entity(&entity.get_tiled(tile), labelstyle, scale, &self.icon_cache, pixels);
             }
         }
     }
@@ -166,7 +166,7 @@ impl Drawer {
                 if let Some(color) = style.color.as_ref() {
                     draw_lines(
                         points,
-                        scale * &style.width,
+                        scale * style.width,
                         color,
                         style.opacity,
                         &scale_dashes(&style.dashes),

@@ -579,7 +579,7 @@ impl<'a> GeoEntity for Multipolygon<'a> {
     fn get_area_square(&self) -> Option<u64> {
         if self.polygon_count() > 0 {
             let sum = (0..self.polygon_count())
-                .flat_map(|poly_idx| self.get_polygon(poly_idx).get_area_square().map(|x| x))
+                .flat_map(|poly_idx| self.get_polygon(poly_idx).get_area_square())
                 .sum::<u64>();
 
             Some(sum)
