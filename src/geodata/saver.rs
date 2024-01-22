@@ -42,7 +42,7 @@ impl TileIdToReferences {
     }
 
     fn tile_ref_by_xy(&mut self, tile_x: u32, tile_y: u32) -> &mut TileReferences {
-        self.refs.entry((tile_x, tile_y)).or_insert_with(Default::default)
+        self.refs.entry((tile_x, tile_y)).or_default()
     }
 }
 

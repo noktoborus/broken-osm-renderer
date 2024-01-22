@@ -126,7 +126,7 @@ impl Ord for Cell {
 
 impl PartialOrd for Cell {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.max_fitness.partial_cmp(&other.max_fitness)
+        Some(self.cmp(other))
     }
 }
 

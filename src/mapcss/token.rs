@@ -183,7 +183,7 @@ impl<'a> Tokenizer<'a> {
             }
 
             let import_text = match self.next_char_with_pos() {
-                Some((idx, ch)) if ch == '"' => match self.read_string(idx + 1)? {
+                Some((idx, '"')) => match self.read_string(idx + 1)? {
                     Token::String(text) => Ok(text),
                     _ => panic!("read_string() returned a non-string; this is a bug"),
                 },
